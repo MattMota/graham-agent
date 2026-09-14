@@ -1,0 +1,4 @@
+[llm]
+model = "deepseek/deepseek-v4-flash"
+temperature = 0.2
+timeout = 60
