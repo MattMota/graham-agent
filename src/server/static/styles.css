@@ -14,6 +14,8 @@
   --rule:       rgba(20, 17, 12, 0.11);
   --rule-firm:  rgba(20, 17, 12, 0.2);
   --accent:     #6b1d1d;
+  --down:       #c2352b; /* queda */
+  --up:         #1c7a45; /* alta */
 
   --serif: "Times New Roman", Times, "Liberation Serif", "Nimbus Roman", serif;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -311,6 +313,83 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .tool-note.is-working { color: var(--ink-soft); }
 
+.tool-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 6px;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  font-family: var(--sans);
+  font-size: inherit;
+  color: inherit;
+  transition: color 180ms ease, background 180ms ease;
+}
+
+.tool-toggle:hover,
+.tool-toggle:focus-visible {
+  background: var(--card);
+  color: var(--ink);
+  outline: none;
+}
+
+.tool-chevron {
+  display: inline-flex;
+  opacity: 0.65;
+  transition: transform 220ms ease;
+}
+
+.tool-toggle[aria-expanded="true"] .tool-chevron { transform: rotate(180deg); }
+
+/* Argumentos e retorno, lado a lado, em caixas de código. */
+.tool-detail {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 0 0 20px;
+  animation: rise 260ms ease both;
+}
+
+.code-box {
+  background: #262a32;
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.code-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 2px;
+  font-family: var(--sans);
+  font-size: 0.72rem;
+  color: #a7b0c0;
+}
+
+.code-lang { font-size: 0.66rem; letter-spacing: 0.06em; color: #78839a; }
+
+.code-box pre {
+  margin: 0;
+  padding: 6px 14px 14px;
+  max-height: 230px;
+  overflow: auto;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: #dde3ee;
+  scrollbar-width: thin;
+  scrollbar-color: #4d5566 transparent;
+}
+
+.code-box pre::-webkit-scrollbar { width: 9px; height: 9px; }
+.code-box pre::-webkit-scrollbar-thumb {
+  background: #4d5566;
+  border: 2px solid #262a32;
+  border-radius: 999px;
+}
+
 .tool-note .dot {
   display: inline-block;
   width: 5px;
@@ -331,6 +410,173 @@ button { font: inherit; color: inherit; cursor: pointer; }
   vertical-align: -0.15em;
   animation: blink 1.1s step-end infinite;
 }
+
+/* ───────────────────────────── Cartões de ticker ────────────────────────── */
+
+/* Com a lista aberta, o wrapper fica mais alto que a tela e o controle gruda
+   logo abaixo do cabeçalho — dá para recolher sem rolar tudo de volta.
+   Fechado, o wrapper tem a altura do próprio controle e o sticky não age. */
+.ticker-reveal {
+  position: sticky;
+  top: calc(var(--topbar-h) + 10px);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 24px 0 0;
+  padding: 8px 0;
+  background: rgba(241, 238, 231, 0.85);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+}
+
+.ticker-reveal::before,
+.ticker-reveal::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+.reveal-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-pill);
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  box-shadow: var(--shadow-soft);
+  transition: color 200ms ease, box-shadow 200ms ease;
+}
+
+.reveal-toggle:hover,
+.reveal-toggle:focus-visible {
+  color: var(--ink);
+  box-shadow: var(--shadow-lift);
+  outline: none;
+}
+
+.reveal-toggle svg { transition: transform 240ms ease; }
+.reveal-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+/* 1 cartão fica centrado; a partir de 2, duas colunas — e um número ímpar
+   deixa o último centrado sozinho na última linha. */
+.ticker-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin: 16px 0 2px;
+  animation: rise 320ms ease both;
+}
+
+.ticker-card {
+  flex: 1 1 300px;
+  max-width: calc(50% - 6px);
+  min-width: 250px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  padding: 13px 18px 15px;
+  background: var(--card);
+  border: 1px solid var(--rule-firm);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-soft);
+  font-family: var(--sans);
+}
+
+.tc-currency {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--gray-light);
+}
+
+.tc-time {
+  justify-self: end;
+  font-size: 0.72rem;
+  color: var(--gray);
+}
+
+.tc-symbol {
+  font-size: clamp(1.3rem, 3.4vw, 1.62rem);
+  font-weight: 300;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.tc-price {
+  justify-self: end;
+  font-size: clamp(1.3rem, 3.4vw, 1.62rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A truncagem fica na camada interna para que o balão não seja recortado
+   pelo `overflow: hidden` do nome. */
+.tc-name {
+  position: relative;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--gray);
+}
+
+.tc-name-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tc-name[data-full] { cursor: help; }
+
+.tc-name[data-full]::after {
+  content: attr(data-full);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 0;
+  z-index: 6;
+  width: max-content;
+  max-width: min(260px, 70vw);
+  padding: 7px 11px;
+  background: var(--ink);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-lift);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  white-space: normal;
+  color: var(--card);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(3px);
+  transition: opacity 160ms ease, transform 160ms ease, visibility 160ms;
+  pointer-events: none;
+}
+
+.tc-name[data-full]:hover::after,
+.tc-name[data-full]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+.tc-change {
+  justify-self: end;
+  font-size: 0.82rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tc-change.is-down { color: var(--down); }
+.tc-change.is-up { color: var(--up); }
 
 .error-note {
   margin: 16px 0;
@@ -440,6 +686,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
   .hero { padding-bottom: 4vh; }
   .turn-agent .turn-body { font-size: 1.14rem; }
   .suggestion { font-size: 0.86rem; padding: 10px 16px; }
+  .ticker-card { flex-basis: 100%; max-width: 100%; min-width: 0; }
+  .tool-detail { grid-template-columns: 1fr; }
   .colophon { font-size: 0.68rem; }
 }
 
