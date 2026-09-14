@@ -208,7 +208,7 @@ async function ask(question) {
 
   addTurn("user", "Você").textContent = question;
 
-  const body = addTurn("agent", "Graham");
+  const body = addTurn("agent", "Graham Agent");
   scrollToEnd();
 
   // A resposta é montada em blocos na ordem em que acontece: o modelo pode

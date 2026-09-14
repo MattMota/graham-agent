@@ -33,7 +33,7 @@ async def responder(pergunta: str) -> None:
 
 
 async def main() -> None:
-    print("Agente Graham — digite 'sair' para encerrar.")
+    print("Graham Agent — digite 'sair' para encerrar.")
 
     while True:
         pergunta = input("\nvocê: ").strip()

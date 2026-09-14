@@ -15,7 +15,7 @@ from src.agent.runtime.state_graph import RE_ACT_GRAPH, AgentState
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-app = FastAPI(title="Graham", description="Seu corretor de confiança")
+app = FastAPI(title="Graham Agent", description="Seu corretor de confiança")
 
 
 class ChatRequest(BaseModel):
