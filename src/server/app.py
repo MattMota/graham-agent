@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -37,10 +38,28 @@ class ChatRequest(BaseModel):
     )
 
 
+def _json_safe(value: Any) -> Any:
+    """Troca NaN e Infinity por `None` em toda a estrutura.
+
+    `json.dumps` os escreve como literais `NaN`/`Infinity`, que não existem no
+    JSON e derrubam o `JSON.parse` do navegador — junto com a resposta inteira.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _sse(event: str, data: dict[str, Any]) -> str:
     """Formata um evento no protocolo Server-Sent Events."""
     # `json.dumps` escapa quebras de linha, então o payload nunca quebra o frame.
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    return (
+        f"event: {event}\n"
+        f"data: {json.dumps(_json_safe(data), ensure_ascii=False, allow_nan=False)}\n\n"
+    )
 
 
 def _tool_payload(output: Any) -> Any:

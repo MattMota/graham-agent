@@ -1,5 +1,5 @@
 """Ferramentas do agente — wrappers sobre a API do yfinance."""
-import inspect, sys
+import inspect, math, sys
 from langchain_core.tools import BaseTool
 
 from datetime import datetime, timezone
@@ -38,9 +38,15 @@ def _ticker(ticker_name: str) -> yf.Ticker:
 def _safe(getter: Callable[[], Any]) -> Optional[Any]:
     """Retorna o valor buscado ou `None` quando o dado não existe na Yahoo."""
     try:
-        return getter()
+        value = getter()
     except Exception:
         return None
+    # A Yahoo devolve NaN onde o dado não se aplica — BTC-USD não tem
+    # fechamento anterior, por exemplo. Para o Python NaN é um float válido,
+    # e ele contaminaria as contas e o JSON; aqui vira ausência de dado.
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def _percent_change(price: Optional[float], previous: Optional[float]) -> tuple[Optional[float], Optional[float]]:

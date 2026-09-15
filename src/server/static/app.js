@@ -472,7 +472,12 @@ async function ask(question) {
         const raw = frame.match(/^data:\s*(.*)$/m)?.[1];
         if (!name || raw === undefined) continue;
 
-        const data = JSON.parse(raw);
+        let data;
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          continue; // um frame malformado não derruba o resto da resposta
+        }
 
         if (name === "token") {
           openBlock();
