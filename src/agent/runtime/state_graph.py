@@ -1,10 +1,11 @@
 from typing import TypedDict, Annotated, Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage, AIMessage
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
-from langgraph.checkpoint.memory import InMemorySaver
 
 from src.agent.config.model import LLM
 from src.agent.instructions import SYSTEM_PROMPT
@@ -24,7 +25,7 @@ async def call_model(state: AgentState) -> dict:
     return {"messages": [response]}
 
 
-RE_ACT_GRAPH = (
+GRAPH_BUILDER = (
     StateGraph(AgentState)
 
     # Nodes
@@ -37,9 +38,12 @@ RE_ACT_GRAPH = (
     .add_edge("tools", "agent") # After the tool is called, always go back to the agent node
     # .add_edge("agent", END) # If the agent doesn't want to call a tool, go to the end.
     # The above is redundant with `tools_condition`, which automatically moves to END if the agent concludes a tool call isn't needed.
-
-    # Create the graph
-    .compile(
-        checkpointer=InMemorySaver() # Uses in-memory checkpointer to save graph state
-    )
 )
+
+
+def compile_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
+    """Compila o grafo com o checkpointer de quem vai executá-lo.
+
+    O servidor usa o Postgres; o REPL, a memória do processo.
+    """
+    return GRAPH_BUILDER.compile(checkpointer=checkpointer)

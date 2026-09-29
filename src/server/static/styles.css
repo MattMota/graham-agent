@@ -411,6 +411,96 @@ button { font: inherit; color: inherit; cursor: pointer; }
   animation: blink 1.1s step-end infinite;
 }
 
+/* ─────────────────────────────── Ações do turno ─────────────────────────── */
+
+/* Como no Claude Code e no Codex: discretas até o turno receber o cursor, e
+   sempre visíveis na última resposta, onde mais se usa. */
+.turn-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 14px;
+  font-family: var(--sans);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.turn:hover .turn-actions,
+.turn:focus-within .turn-actions,
+.turn:last-of-type .turn-actions,
+.turn.is-interrupted .turn-actions { opacity: 1; }
+
+/* Em telas de toque não há hover que as revele. */
+@media (hover: none) {
+  .turn-actions { opacity: 1; }
+}
+
+.action-button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  color: var(--gray);
+  transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+}
+
+.action-button:hover,
+.action-button:focus-visible {
+  background: var(--card);
+  border-color: var(--rule);
+  color: var(--ink);
+  outline: none;
+}
+
+/* Durante uma resposta, nenhuma outra pode ser regerada ou bifurcada. */
+.app.is-streaming .action-button {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.turn-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: 8px;
+  font-size: 0.78rem;
+  color: var(--accent);
+}
+
+.turn-flag::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* A resposta que não terminou fica um tom abaixo das demais. */
+.turn.is-interrupted .turn-body { color: var(--ink-soft); }
+
+/* O ponto de onde um fork continua: mesmo traçado do aviso de consulta. */
+.fork-note {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 0 18px;
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  color: var(--accent);
+}
+
+.fork-note::before,
+.fork-note::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(107, 29, 29, 0.25);
+}
+
 /* ───────────────────────────── Cartões de ticker ────────────────────────── */
 
 /* Com a lista aberta, o wrapper fica mais alto que a tela e o controle gruda

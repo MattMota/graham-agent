@@ -14,29 +14,28 @@ let streaming = false;
 
 /* ─────────────────────────────── Identidade da conversa ─────────────────── */
 
+// A conversa é criada pelo servidor na primeira pergunta; o navegador só
+// guarda o id para reabri-la depois.
 const THREAD_KEY = "graham.thread_id";
 
 function storeThreadId(id) {
   try {
-    localStorage.setItem(THREAD_KEY, id);
+    if (id) localStorage.setItem(THREAD_KEY, id);
+    else localStorage.removeItem(THREAD_KEY);
   } catch {
     // Navegação privativa ou storage bloqueado: a conversa vive só nesta aba.
   }
 }
 
-function initialThreadId() {
+function savedThreadId() {
   try {
-    const saved = localStorage.getItem(THREAD_KEY);
-    if (saved) return saved;
+    return localStorage.getItem(THREAD_KEY);
   } catch {
-    /* segue com um id novo */
+    return null;
   }
-  const fresh = crypto.randomUUID();
-  storeThreadId(fresh);
-  return fresh;
 }
 
-let threadId = initialThreadId();
+let threadId = savedThreadId();
 
 /* ──────────────────────────────── Estado da tela ────────────────────────── */
 
@@ -46,17 +45,30 @@ function showConversation() {
   topbarMark.hidden = false;
 }
 
-function startNewConversation() {
-  if (streaming) return;
+function clearConversation() {
+  for (const node of thread.querySelectorAll(".turn, .fork-note")) node.remove();
+}
 
-  threadId = crypto.randomUUID();
-  storeThreadId(threadId);
-
-  for (const turn of thread.querySelectorAll(".turn")) turn.remove();
-
+function showEmpty() {
+  clearConversation();
   app.classList.add("is-empty");
   hero.hidden = false;
   topbarMark.hidden = true;
+}
+
+function setStreaming(value) {
+  streaming = value;
+  sendButton.disabled = value;
+  app.classList.toggle("is-streaming", value);
+}
+
+function startNewConversation() {
+  if (streaming) return;
+
+  threadId = null;
+  storeThreadId(null);
+
+  showEmpty();
   input.value = "";
   resize();
   input.focus();
@@ -400,17 +412,134 @@ function scrollToEnd() {
   window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
 }
 
-/* ─────────────────────────────────── Envio ──────────────────────────────── */
+function errorNote(message) {
+  const note = document.createElement("div");
+  note.className = "error-note";
+  note.textContent = message;
+  return note;
+}
 
-async function ask(question) {
-  if (streaming) return;
-  streaming = true;
-  sendButton.disabled = true;
-  showConversation();
+/* ─────────────────────────────── Ações do turno ─────────────────────────── */
 
-  addTurn("user", "Você").textContent = question;
+const ICONS = {
+  regenerate:
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+  fork:
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/>' +
+    '<path d="M6 8.5v7M18 10.5c0 4-4 5-9.5 6"/></svg>',
+};
+
+const STATE_FLAGS = {
+  interrupted: "Resposta interrompida",
+  failed: "Resposta com erro",
+};
+
+function actionButton(icon, label, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "action-button";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = ICONS[icon];
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+// Regerar e bifurcar, embaixo de cada resposta. `messageId` é a última
+// mensagem do turno: a partir dela o fork continua, e dela o servidor sobe até
+// a pergunta que será respondida de novo.
+function addTurnActions(body, messageId, state) {
+  const turn = body.closest(".turn");
+  turn.dataset.messageId = messageId;
+
+  const bar = document.createElement("div");
+  bar.className = "turn-actions";
+
+  if (STATE_FLAGS[state]) {
+    turn.classList.add("is-interrupted");
+    const flag = document.createElement("span");
+    flag.className = "turn-flag";
+    flag.textContent = STATE_FLAGS[state];
+    bar.append(flag);
+  }
+
+  bar.append(
+    actionButton("regenerate", "Regerar resposta", () => regenerate(turn)),
+    actionButton("fork", "Bifurcar conversa a partir daqui", () => fork(turn)),
+  );
+  turn.append(bar);
+}
+
+function forkNote() {
+  const note = document.createElement("div");
+  note.className = "fork-note";
+  note.textContent = "bifurcação · a conversa continua daqui";
+  return note;
+}
+
+/* ─────────────────────────────── Histórico gravado ──────────────────────── */
+
+function renderStoredTurn(turn) {
+  if (turn.role === "user") {
+    addTurn("user", "Você").textContent = turn.content;
+    return;
+  }
 
   const body = addTurn("agent", "Graham Agent");
+  for (const block of turn.blocks) {
+    if (block.type === "text") {
+      const text = document.createElement("div");
+      text.className = "answer-block";
+      text.innerHTML = renderMarkdown(block.text);
+      body.append(text);
+    } else {
+      const note = toolBlock(block.name, block.input);
+      body.append(note.root);
+      if (block.done) note.finish(block.output);
+      else note.abort();
+    }
+  }
+  addTurnActions(body, turn.id, turn.state);
+}
+
+async function openThread(id) {
+  const response = await fetch(`/api/threads/${id}`);
+  if (!response.ok) {
+    // Conversa de outra sessão ou apagada: começa do zero.
+    threadId = null;
+    storeThreadId(null);
+    showEmpty();
+    return;
+  }
+
+  const data = await response.json();
+  threadId = data.id;
+  storeThreadId(data.id);
+
+  clearConversation();
+  if (!data.turns.length) {
+    showEmpty();
+    return;
+  }
+
+  showConversation();
+  for (const turn of data.turns) {
+    renderStoredTurn(turn);
+    if (turn.id === data.forked_from_message_id) thread.append(forkNote());
+  }
+  window.scrollTo({ top: document.body.scrollHeight });
+}
+
+/* ─────────────────────────────────── Envio ──────────────────────────────── */
+
+// Transmite um turno do agente para dentro de `body`: serve tanto a uma
+// pergunta nova quanto a uma resposta regerada.
+async function streamTurn(url, payload, body) {
+  setStreaming(true);
   scrollToEnd();
 
   // A resposta é montada em blocos na ordem em que acontece: o modelo pode
@@ -424,6 +553,9 @@ async function ask(question) {
 
   // Cartões dos tickers citados, enviados depois que a resposta termina.
   const tickers = [];
+
+  // Chega no evento `done`: a mensagem que fecha o turno e como ele terminou.
+  let outcome = null;
 
   const openBlock = () => {
     if (!block) {
@@ -442,10 +574,10 @@ async function ask(question) {
   };
 
   try {
-    const response = await fetch("/api/chat", {
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: question, thread_id: threadId }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok || !response.body) {
@@ -479,7 +611,11 @@ async function ask(question) {
           continue; // um frame malformado não derruba o resto da resposta
         }
 
-        if (name === "token") {
+        if (name === "thread") {
+          threadId = data.id;
+          storeThreadId(data.id);
+
+        } else if (name === "token") {
           openBlock();
           blockText += data.text;
           block.innerHTML = renderMarkdown(blockText);
@@ -504,18 +640,15 @@ async function ask(question) {
           tickers.push(data);
 
         } else if (name === "error") {
-          const note = document.createElement("div");
-          note.className = "error-note";
-          note.textContent = data.message;
-          body.append(note);
+          body.append(errorNote(data.message));
+
+        } else if (name === "done") {
+          outcome = data;
         }
       }
     }
   } catch (error) {
-    const note = document.createElement("div");
-    note.className = "error-note";
-    note.textContent = `Não foi possível completar a consulta. ${error.message}`;
-    body.append(note);
+    body.append(errorNote(`Não foi possível completar a consulta. ${error.message}`));
   } finally {
     closeBlock();
     if (tickers.length) body.append(tickerPanel(tickers));
@@ -523,9 +656,56 @@ async function ask(question) {
     for (const queue of pendingNotes.values()) {
       for (const note of queue) note.abort();
     }
-    streaming = false;
-    sendButton.disabled = false;
+    if (outcome) addTurnActions(body, outcome.message_id, outcome.state);
+    setStreaming(false);
     input.focus();
+  }
+}
+
+async function ask(question) {
+  if (streaming) return;
+  showConversation();
+
+  addTurn("user", "Você").textContent = question;
+  const body = addTurn("agent", "Graham Agent");
+  await streamTurn("/api/chat", { message: question, thread_id: threadId }, body);
+}
+
+async function regenerate(turn) {
+  if (streaming) return;
+
+  // A nova resposta substitui esta e tudo o que veio depois dela: no servidor,
+  // ela nasce como irmã desta, e o caminho ativo passa a seguir por ela.
+  const messageId = turn.dataset.messageId;
+  let node = turn;
+  while (node) {
+    const next = node.nextElementSibling;
+    node.remove();
+    node = next;
+  }
+
+  const body = addTurn("agent", "Graham Agent");
+  await streamTurn("/api/regenerate", { thread_id: threadId, message_id: messageId }, body);
+}
+
+async function fork(turn) {
+  if (streaming) return;
+
+  try {
+    const response = await fetch(`/api/threads/${threadId}/fork`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message_id: turn.dataset.messageId }),
+    });
+    if (!response.ok) throw new Error(`O servidor respondeu ${response.status}.`);
+
+    const { id } = await response.json();
+    await openThread(id);
+    input.focus();
+  } catch (error) {
+    turn.querySelector(".turn-body").append(
+      errorNote(`Não foi possível bifurcar a conversa. ${error.message}`),
+    );
   }
 }
 
@@ -565,4 +745,19 @@ for (const button of document.querySelectorAll(".suggestion")) {
   });
 }
 
-input.focus();
+// Antes de qualquer chamada, o servidor precisa do cookie do usuário anônimo.
+// Até lá, o envio fica bloqueado para a primeira pergunta não cair num 401.
+async function boot() {
+  setStreaming(true);
+  try {
+    await fetch("/api/session", { method: "POST" });
+    if (threadId) await openThread(threadId);
+  } catch {
+    // Sem servidor, a tela continua de pé; o erro aparece ao perguntar.
+  } finally {
+    setStreaming(false);
+    input.focus();
+  }
+}
+
+boot();

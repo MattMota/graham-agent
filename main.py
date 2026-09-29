@@ -1,8 +1,11 @@
 # main.py
 import asyncio
 from langchain_core.messages import HumanMessage
-from src.agent.runtime.state_graph import RE_ACT_GRAPH, AgentState
+from langgraph.checkpoint.memory import InMemorySaver
+from src.agent.runtime.state_graph import AgentState, compile_graph
 
+# O REPL não grava no banco: a conversa vive na memória do processo.
+GRAPH = compile_graph(InMemorySaver())
 CONFIG = {"configurable": {"thread_id": "cli"}}
 
 
@@ -12,7 +15,7 @@ async def responder(pergunta: str) -> None:
     # só começamos a imprimir quando chega conteúdo de verdade.
     comecou = False
 
-    async for event in RE_ACT_GRAPH.astream_events(entrada, config=CONFIG, version="v2"):
+    async for event in GRAPH.astream_events(entrada, config=CONFIG, version="v2"):
         kind = event["event"]
 
         if kind == "on_chat_model_stream":

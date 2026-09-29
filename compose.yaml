@@ -1,0 +1,32 @@
+# Banco de dados local do Graham: Postgres 18 com a extensão pgvector.
+#
+#   docker compose up -d      sobe o banco em segundo plano
+#   docker compose ps         mostra se está de pé (e saudável)
+#   docker compose logs db    mostra o que o Postgres escreveu no log
+#   docker compose down       desliga o banco; os dados continuam no volume
+#   docker compose down -v    desliga e APAGA os dados
+
+services:
+  db:
+    # Imagem oficial do Postgres com o pgvector já compilado.
+    image: pgvector/pgvector:pg18
+    environment:
+      # Credenciais só de desenvolvimento: a porta abaixo só aceita conexões
+      # desta máquina.
+      POSTGRES_USER: graham
+      POSTGRES_PASSWORD: graham
+      POSTGRES_DB: graham
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # A partir do Postgres 18, a imagem guarda os dados em um subdiretório por
+      # versão e espera o volume montado em /var/lib/postgresql.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U graham -d graham"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

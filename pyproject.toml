@@ -7,7 +7,9 @@ dependencies = [
     "fastapi>=0.141.1",
     "langchain[openai]>=1.4.0",
     "langgraph>=1.2.11",
+    "langgraph-checkpoint-postgres>=3.1.2",
     "pandas>=3.0.5",
+    "psycopg[binary,pool]>=3.3.6",
     "uvicorn>=0.53.0",
     "yfinance>=1.7.0",
 ]
