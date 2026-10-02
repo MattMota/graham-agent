@@ -9,7 +9,7 @@ from psycopg_pool import AsyncConnectionPool
 
 Row = dict[str, Any]
 Role = Literal["user", "assistant", "tool"]
-State = Literal["streaming", "completed", "interrupted", "failed"]
+State = Literal["streaming", "awaiting_approval", "completed", "interrupted", "failed"]
 
 THREAD_COLUMNS = "id, user_id, title, forked_from_message_id, head_message_id, created_at"
 
@@ -119,6 +119,10 @@ async def add_message(
     return message_id
 
 
+async def get_message(pool: AsyncConnectionPool, message_id: UUID) -> Row | None:
+    return await _one(pool, "SELECT * FROM agent.messages WHERE id = %s", (message_id,))
+
+
 async def update_message(
     pool: AsyncConnectionPool,
     message_id: UUID,
@@ -136,6 +140,25 @@ async def update_message(
             WHERE id = %s
             """,
             (content, state, _json(payload), message_id),
+        )
+
+
+async def revise_message(
+    pool: AsyncConnectionPool,
+    message_id: UUID,
+    *,
+    state: State | None = None,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """Muda o estado ou o payload de uma mensagem já fechada, sem tocar no conteúdo."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            UPDATE agent.messages
+            SET state = coalesce(%s, state), payload = coalesce(%s, payload)
+            WHERE id = %s
+            """,
+            (state, _json(payload), message_id),
         )
 
 

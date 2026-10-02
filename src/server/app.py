@@ -20,10 +20,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from pydantic import BaseModel, Field
+from langgraph.types import Command
+from pydantic import BaseModel, Field, ValidationError
 
+from src.agent.runtime.context import AgentContext
 from src.agent.runtime.state_graph import AgentState, compile_graph
 from src.agent.tools.definition import get_current_stock_price
+from src.agent.tools.registry import APPROVAL_REQUIRED, TOOLS
 from src.server.recorder import TurnRecorder
 from src.storage import conversations
 from src.storage.database import create_pool
@@ -118,6 +121,25 @@ class ForkRequest(BaseModel):
     """Cria uma conversa nova que continua a partir de uma mensagem."""
 
     message_id: UUID = Field(description="Mensagem a partir da qual a nova conversa segue.")
+
+
+class Decision(BaseModel):
+    """O que o usuário decidiu sobre uma operação."""
+
+    tool_call_id: str
+    approved: bool
+    args: dict[str, Any] | None = Field(
+        default=None,
+        description="Os valores corrigidos pelo usuário; sem eles, valem os do agente.",
+    )
+
+
+class ApprovalRequest(BaseModel):
+    """As decisões do usuário sobre as operações de um turno pausado."""
+
+    thread_id: UUID
+    message_id: UUID = Field(description="A mensagem que marca a pausa.")
+    decisions: list[Decision]
 
 
 # ─────────────────────────────── Usuário anônimo ────────────────────────────
@@ -233,7 +255,7 @@ def _symbols_in(payload: Any) -> list[str]:
     symbols = []
     if payload.get("ticker_name"):
         symbols.append(payload["ticker_name"])
-    for key in ("matches", "companies"):
+    for key in ("matches", "companies", "positions", "entries"):
         for item in payload.get(key) or []:
             if isinstance(item, dict) and item.get("ticker_name"):
                 symbols.append(item["ticker_name"])
@@ -271,22 +293,83 @@ async def _ticker_cards(
     return [_ticker_card(quotes[symbol]) for symbol in wanted if symbol in quotes]
 
 
-async def _stream_answer(app: FastAPI, thread: dict[str, Any], question_id: UUID) -> AsyncIterator[str]:
-    """Roda um turno do agente, gravando as mensagens e traduzindo os eventos do
-    grafo em eventos SSE para o navegador."""
-    pool = app.state.pool
-    yield _sse("thread", {"id": str(thread["id"]), "title": thread["title"]})
+# ─────────────────────────────── Confirmação ────────────────────────────────
 
-    entrada: AgentState = {
-        "messages": to_langchain(await conversations.message_path(pool, question_id))
-    }
-    recorder = await TurnRecorder.start(pool, thread["id"], question_id)
+TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
+
+APPROVAL_TITLES = {
+    "registrar_compra": "Registrar compra na carteira",
+    "registrar_venda": "Registrar venda na carteira",
+    "adicionar_watchlist": "Adicionar à watchlist",
+    "remover_watchlist": "Remover da watchlist",
+}
+
+# Campos que o usuário não corrige no cartão. Um ativo errado não é um valor a
+# ajustar: é outra operação, então ele cancela e pede ao agente.
+LOCKED_FIELDS = ("ticker_name",)
+
+
+def _approval_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Os pedidos de confirmação, com o que a interface precisa para montar o
+    formulário: o título da operação, o schema dos argumentos e os campos travados."""
+    enriched = []
+    for request in requests:
+        schema = TOOLS_BY_NAME[request["name"]].args_schema.model_json_schema()
+        enriched.append({
+            **request,
+            "title": APPROVAL_TITLES.get(request["name"], request["name"]),
+            "schema": schema,
+            "locked": [field for field in LOCKED_FIELDS if field in schema["properties"]],
+        })
+    return enriched
+
+
+def _validated_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Valida os valores que o usuário aprovou com o mesmo schema da ferramenta."""
+    schema = TOOLS_BY_NAME[name].args_schema
+    try:
+        return schema.model_validate(args).model_dump(mode="json")
+    except ValidationError as error:
+        titles = {key: field.title or key for key, field in schema.model_fields.items()}
+        problems = "; ".join(
+            f"{titles.get(str(problem['loc'][0]), problem['loc'][0])}: {problem['msg']}"
+            if problem["loc"] else problem["msg"]
+            for problem in error.errors()
+        )
+        raise HTTPException(status_code=422, detail=problems) from None
+
+
+async def _abandon_pending_approval(pool, thread: dict[str, Any]) -> None:
+    """Uma pergunta nova (ou uma regeneração) no lugar da resposta ao cartão
+    encerra a confirmação pendente: as operações não são feitas."""
+    head = thread["head_message_id"]
+    if head is not None:
+        row = await conversations.get_message(pool, head)
+        if row and row["state"] == "awaiting_approval":
+            await conversations.revise_message(pool, head, state="interrupted")
+
+
+# ──────────────────────────────── Execução ──────────────────────────────────
+
+
+async def _run_turn(
+    app: FastAPI, thread: dict[str, Any], recorder: TurnRecorder, graph_input: Any
+) -> AsyncIterator[str]:
+    """Executa o grafo, gravando as mensagens e traduzindo os eventos em SSE.
+
+    Serve tanto ao começo de um turno quanto à retomada depois da confirmação:
+    nos dois casos o turno pode terminar, falhar ou pausar de novo.
+    """
+    pool = app.state.pool
+    graph = app.state.graph
     # Cada turno roda numa thread própria do LangGraph: os checkpoints servem
-    # para inspecionar a execução, e o histórico vem das nossas tabelas.
+    # para inspecionar a execução e para esperar a confirmação; o histórico vem
+    # das nossas tabelas.
     config = {
         "configurable": {"thread_id": recorder.graph_thread_id},
         "metadata": {"graham_thread_id": str(thread["id"])},
     }
+    context = AgentContext(user_id=thread["user_id"], pool=pool)
 
     # Mesmo cuidado do CLI: o modelo emite espaços em branco antes de anunciar
     # uma ferramenta, e eles não devem aparecer na tela.
@@ -297,12 +380,14 @@ async def _stream_answer(app: FastAPI, thread: dict[str, Any], question_id: UUID
     candidates: list[str] = []
     answer = ""
 
-    # Só vira verdadeiro quando o turno termina, bem ou com erro. Se o gerador
+    # Só vira verdadeiro quando o turno termina, falha ou pausa. Se o gerador
     # for encerrado antes disso, o cliente desconectou no meio da resposta.
     settled = False
 
     try:
-        async for event in app.state.graph.astream_events(entrada, config=config, version="v2"):
+        async for event in graph.astream_events(
+            graph_input, config=config, context=context, version="v2"
+        ):
             kind = event["event"]
 
             if kind == "on_chat_model_start":
@@ -317,6 +402,11 @@ async def _stream_answer(app: FastAPI, thread: dict[str, Any], question_id: UUID
                     comecou = True
                     answer += chunk.content
                     yield _sse("token", {"text": chunk.content})
+
+            # As operações que pediram confirmação já têm o seu cartão na tela;
+            # o resultado delas chega pelo fim do nó `tools`, mais abaixo.
+            elif kind in ("on_tool_start", "on_tool_end") and event["name"] in APPROVAL_REQUIRED:
+                comecou = False
 
             elif kind == "on_tool_start":
                 yield _sse(
@@ -344,11 +434,40 @@ async def _stream_answer(app: FastAPI, thread: dict[str, Any], question_id: UUID
             elif kind == "on_chain_end" and event["name"] == "agent":
                 await recorder.model_finished(event["data"]["output"]["messages"][-1])
 
+            elif kind == "on_chain_end" and event["name"] == "approval":
+                output = event["data"]["output"]
+                if isinstance(output, Command) and output.update:
+                    await recorder.approval_finished(output.update.get("messages", []))
+
             elif kind == "on_chain_end" and event["name"] == "tools":
-                await recorder.tools_finished(event["data"]["output"]["messages"])
+                messages = event["data"]["output"]["messages"]
+                await recorder.tools_finished(messages)
+                # Daqui, e não do `on_tool_end`: um erro que escapa da
+                # ferramenta é tratado pelo ToolNode e só aparece nesta saída.
+                for message in messages:
+                    if message.name in APPROVAL_REQUIRED:
+                        failed = message.status == "error"
+                        yield _sse("operation", {
+                            "tool_call_id": message.tool_call_id,
+                            "status": "failed" if failed else "completed",
+                            "message": message.text if failed else None,
+                        })
 
         for card in await _ticker_cards(quotes, candidates, answer):
             yield _sse("ticker", card)
+
+        # O grafo parou no nó de aprovação: o turno espera o usuário decidir.
+        snapshot = await graph.aget_state(config)
+        if snapshot.interrupts:
+            requests = snapshot.interrupts[0].value
+            approval_id = await recorder.pause(requests)
+            settled = True
+            yield _sse("approval", {
+                "message_id": str(approval_id),
+                "requests": _approval_requests(requests),
+            })
+            yield _sse("done", {"message_id": str(approval_id), "state": "awaiting_approval"})
+            return
 
         settled = True
         yield _sse("done", {"message_id": str(recorder.last), "state": "completed"})
@@ -366,6 +485,28 @@ async def _stream_answer(app: FastAPI, thread: dict[str, Any], question_id: UUID
             # garante que o texto parcial seja salvo antes de o gerador fechar.
             with anyio.CancelScope(shield=True):
                 await recorder.stop("interrupted")
+
+
+async def _start_turn(app: FastAPI, thread: dict[str, Any], question_id: UUID) -> AsyncIterator[str]:
+    """Começa um turno respondendo à pergunta, com o histórico até ela."""
+    pool = app.state.pool
+    yield _sse("thread", {"id": str(thread["id"]), "title": thread["title"]})
+
+    entrada: AgentState = {
+        "messages": to_langchain(await conversations.message_path(pool, question_id))
+    }
+    recorder = await TurnRecorder.start(pool, thread["id"], question_id)
+    async for frame in _run_turn(app, thread, recorder, entrada):
+        yield frame
+
+
+async def _resume_turn(
+    app: FastAPI, thread: dict[str, Any], recorder: TurnRecorder, decisions: dict[str, Any]
+) -> AsyncIterator[str]:
+    """Retoma um turno pausado, entregando ao grafo as decisões do usuário."""
+    yield _sse("thread", {"id": str(thread["id"]), "title": thread["title"]})
+    async for frame in _run_turn(app, thread, recorder, Command(resume=decisions)):
+        yield frame
 
 
 def _event_stream(body: AsyncIterator[str]) -> StreamingResponse:
@@ -389,12 +530,17 @@ def _display_turn(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     blocks: list[dict[str, Any]] = []
     tools: dict[str, dict[str, Any]] = {}
+    # Resultado de cada operação confirmada ou cancelada, por tool call.
+    results: dict[str, dict[str, Any]] = {}
     for row in rows:
         payload = row["payload"] or {}
         if row["role"] == "assistant":
             if row["content"]:
                 blocks.append({"type": "text", "text": row["content"]})
             for call in payload.get("tool_calls") or []:
+                # As operações aparecem no cartão de confirmação, não como consulta.
+                if call["name"] in APPROVAL_REQUIRED:
+                    continue
                 tools[call["id"]] = {
                     "type": "tool",
                     "name": call["name"],
@@ -403,17 +549,38 @@ def _display_turn(rows: list[dict[str, Any]]) -> dict[str, Any]:
                     "done": False,
                 }
                 blocks.append(tools[call["id"]])
+            if approval := payload.get("approval"):
+                blocks.append({
+                    "type": "approval",
+                    "message_id": str(row["id"]),
+                    "state": row["state"],
+                    "requests": _approval_requests(approval["requests"]),
+                    "decisions": approval.get("decisions"),
+                    "results": results,
+                })
         elif payload.get("tool_call_id") in tools:
             tools[payload["tool_call_id"]].update(
                 output=_tool_preview(_tool_payload(row["content"])), done=True
             )
+        elif payload.get("name") in APPROVAL_REQUIRED:
+            failed = row["state"] == "failed" and not payload.get("cancelled")
+            results[payload["tool_call_id"]] = {
+                "status": "cancelled" if payload.get("cancelled") else row["state"],
+                "message": row["content"] if failed else None,
+            }
 
     last = rows[-1]
     # Um turno que parou entre uma ferramenta e outra, sem a mensagem que o
-    # fecha, também conta como interrompido.
+    # fecha, também conta como interrompido — inclusive logo depois de uma
+    # confirmação, antes de as operações rodarem.
     finished = last["role"] == "assistant" and not (last["payload"] or {}).get("tool_calls")
     state = last["state"] if finished else "interrupted"
+    if (last["payload"] or {}).get("approval") and state == "completed":
+        state = "interrupted"
     return {"role": "assistant", "id": str(last["id"]), "state": state, "blocks": blocks}
+
+
+# ─────────────────────────────────── Rotas ──────────────────────────────────
 
 
 @app.post("/api/session")
@@ -445,11 +612,12 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
         thread = await conversations.create_thread(pool, _require_user(request), title)
     else:
         thread = await _require_thread(request, body.thread_id)
+        await _abandon_pending_approval(pool, thread)
 
     question_id = await conversations.add_message(
         pool, thread["id"], thread["head_message_id"], "user", "completed", content=body.message
     )
-    return _event_stream(_stream_answer(request.app, thread, question_id))
+    return _event_stream(_start_turn(request.app, thread, question_id))
 
 
 @app.post("/api/regenerate")
@@ -461,7 +629,62 @@ async def regenerate(body: RegenerateRequest, request: Request) -> StreamingResp
     question = next((row for row in reversed(path) if row["role"] == "user"), None)
     if question is None:
         raise HTTPException(status_code=400, detail="Não há pergunta antes desta mensagem.")
-    return _event_stream(_stream_answer(request.app, thread, question["id"]))
+    await _abandon_pending_approval(request.app.state.pool, thread)
+    return _event_stream(_start_turn(request.app, thread, question["id"]))
+
+
+@app.post("/api/approvals")
+async def approve(body: ApprovalRequest, request: Request) -> StreamingResponse:
+    """Retoma um turno pausado com a decisão do usuário sobre cada operação."""
+    pool = request.app.state.pool
+    thread = await _require_thread(request, body.thread_id)
+    path = await conversations.thread_path(pool, body.thread_id)
+
+    pause = path[-1] if path else None
+    if pause is None or pause["id"] != body.message_id or pause["state"] != "awaiting_approval":
+        raise HTTPException(status_code=409, detail="Esta confirmação não está mais pendente.")
+
+    requests = pause["payload"]["approval"]["requests"]
+    decided = {decision.tool_call_id: decision for decision in body.decisions}
+    decisions: dict[str, dict[str, Any]] = {}
+    for item in requests:
+        decision = decided.get(item["tool_call_id"])
+        if decision is None:
+            title = APPROVAL_TITLES.get(item["name"], item["name"])
+            raise HTTPException(status_code=422, detail=f"Falta decidir: {title}.")
+        if decision.approved:
+            args = decision.args if decision.args is not None else item["args"]
+            # Os campos travados valem como o agente os propôs, mande o cliente o que mandar.
+            args = {**args, **{field: item["args"][field] for field in LOCKED_FIELDS if field in item["args"]}}
+            decisions[item["tool_call_id"]] = {
+                "approved": True,
+                "args": _validated_args(item["name"], args),
+            }
+        else:
+            decisions[item["tool_call_id"]] = {"approved": False}
+
+    # O turno começa na primeira mensagem depois da última pergunta; o id dela
+    # nomeia a thread do LangGraph onde o grafo está esperando.
+    question_index = max(index for index, row in enumerate(path) if row["role"] == "user")
+    first_id = path[question_index + 1]["id"]
+    snapshot = await request.app.state.graph.aget_state(
+        {"configurable": {"thread_id": str(first_id)}}
+    )
+    if not snapshot.interrupts:
+        await conversations.revise_message(pool, pause["id"], state="interrupted")
+        raise HTTPException(
+            status_code=410,
+            detail="A confirmação expirou e as operações não foram feitas. Peça de novo ao agente.",
+        )
+
+    await conversations.revise_message(
+        pool,
+        pause["id"],
+        state="completed",
+        payload={"approval": {"requests": requests, "decisions": decisions}},
+    )
+    recorder = TurnRecorder.resume(pool, thread["id"], first_id, pause["id"], pause["parent_id"])
+    return _event_stream(_resume_turn(request.app, thread, recorder, decisions))
 
 
 @app.post("/api/threads/{thread_id}/fork")
@@ -498,7 +721,22 @@ async def health(request: Request) -> dict[str, Any]:
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers=REVALIDATE)
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Sem isto, o navegador escolhe sozinho por quanto tempo reaproveitar uma cópia
+# antiga do JavaScript, e a interface fica para trás do servidor. `no-cache`
+# não desliga o cache: obriga a conferir a etag, e o que não mudou volta 304.
+REVALIDATE = {"Cache-Control": "no-cache"}
+
+
+class RevalidatedStaticFiles(StaticFiles):
+    """Arquivos estáticos que o navegador confere com o servidor antes de usar."""
+
+    async def get_response(self, path: str, scope: Any) -> Any:
+        response = await super().get_response(path, scope)
+        response.headers.update(REVALIDATE)
+        return response
+
+
+app.mount("/static", RevalidatedStaticFiles(directory=STATIC_DIR), name="static")

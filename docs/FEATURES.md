@@ -47,5 +47,7 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 
 | Feature | Estado | Onde | Observações |
 |---|---|---|---|
-| Carteira | ⏳ Pendente | | Escopo a definir |
-| Watchlist | ⏳ Pendente | | Escopo a definir |
+| Carteira | ✅ Existente | `src/agent/tools/portfolio.py`, `core.portfolio_trades` | Livro de operações com preço médio, no preço e na moeda em que o usuário pagou; valor atual convertido pelo câmbio do dia; em tabela na interface |
+| Watchlist | ✅ Existente | `src/agent/tools/portfolio.py`, `core.watchlist` | Operação pretendida, preço alvo e quantidade opcional; distância até o alvo |
+| Confirmação das operações | ✅ Existente | Nó `approval` do grafo, `POST /api/approvals` | Um cartão por operação, com valores editáveis exceto o ativo; o agente sugere a cotação atual para operações de hoje |
+| Cache com Redis | ⏳ Pendente | | Dados de mercado (sem cotações), histórico da conversa e streams retomáveis, com TTL de 1h |

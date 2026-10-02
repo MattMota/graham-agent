@@ -22,8 +22,16 @@ A resposta chega **token a token**, com os dados aparecendo conforme são buscad
 | `noticias_acao` | `ticker_name`, `count`, `tab` | Notícias recentes com título, resumo, data, veículo e link |
 | `buscar_ticker_por_empresa` | `company_name`, `count` | Tickers correspondentes a um nome de empresa, com bolsa, setor e indústria |
 | `buscar_tickers_por_industria` | `industry`, `count`, `region` | Principais empresas de um dos 145 subsetores da classificação Yahoo |
+| `ver_carteira` | `ticker_name?`, `currency?`, `include_trades?` | Posições com preço médio, total investido, valor atual e resultado, totais por moeda e resultado das vendas |
+| `ver_watchlist` | `ticker_name?` | Entradas da watchlist com a cotação atual, a distância até o alvo e se ele foi atingido |
+| `registrar_compra` ✋ | `ticker_name`, `quantity`, `unit_price`, `traded_on`, `currency?` | A operação gravada e a posição nova |
+| `registrar_venda` ✋ | `ticker_name`, `quantity`, `unit_price`, `traded_on`, `currency?` | A operação gravada e a posição nova; recusa vender mais do que havia na data |
+| `adicionar_watchlist` ✋ | `ticker_name`, `operation`, `target_price`, `quantity?` | A entrada criada |
+| `remover_watchlist` ✋ | `ticker_name`, `operation`, `target_price?` | A entrada removida |
 
-As ferramentas são registradas automaticamente: `TOOLS`, em `src/agent/tools/definition.py`, varre o próprio módulo com `inspect` e recolhe todo objeto `BaseTool`. Para adicionar uma ferramenta, basta declará-la com `@tool` no arquivo — não há lista para atualizar em outro lugar.
+✋ Pede a confirmação do usuário antes de rodar (veja [Confirmação das operações](#confirmação-das-operações)).
+
+As ferramentas são registradas automaticamente: `TOOLS`, em `src/agent/tools/definition.py` (mercado) e em `src/agent/tools/portfolio.py` (carteira e watchlist), varre o próprio módulo com `inspect` e recolhe todo objeto `BaseTool`; `src/agent/tools/registry.py` junta as duas listas. Para adicionar uma ferramenta, basta declará-la com `@tool` num desses arquivos. Se ela gravar dados, acrescente o nome a `APPROVAL_REQUIRED`, em `portfolio.py`.
 
 ---
 
@@ -146,11 +154,15 @@ src/
 │   │   ├── __init__.py      Carrega o prompt como SystemMessage
 │   │   └── system_prompt.md Instruções do agente
 │   ├── runtime/
-│   │   └── state_graph.py   O grafo ReAct e a função que o compila
+│   │   ├── context.py       O que as ferramentas recebem do servidor: usuário e pool
+│   │   └── state_graph.py   O grafo, o nó de aprovação e a função que o compila
 │   └── tools/
-│       ├── definition.py    As ferramentas e o registro automático
+│       ├── definition.py    As ferramentas de mercado e o registro automático
+│       ├── portfolio.py     As ferramentas de carteira e watchlist
+│       ├── registry.py      Junta as ferramentas e as que pedem confirmação
 │       └── schemas/
 │           ├── input.py     Schemas de entrada (validam o que o modelo envia)
+│           ├── portfolio.py Schemas de entrada da carteira e da watchlist
 │           └── output.py    Schemas de saída (normalizam o que a Yahoo devolve)
 ├── server/
 │   ├── app.py               FastAPI: sessão, conversas, SSE, cartões de ticker
@@ -158,26 +170,51 @@ src/
 │   └── static/
 │       ├── index.html
 │       ├── styles.css
-│       └── app.js           Cliente SSE, Markdown, histórico e ações do turno
+│       └── app.js           Cliente SSE, Markdown, histórico, ações e cartões de confirmação
 └── storage/
     ├── database.py          Pool de conexões
     ├── conversations.py     Consultas sobre usuários, threads e mensagens
-    └── history.py           Converte o caminho da thread no histórico do modelo
+    ├── history.py           Converte o caminho da thread no histórico do modelo
+    └── portfolio.py         Livro de operações, preço médio e watchlist
 ```
 
 ### O grafo do agente
 
-Um ciclo ReAct de dois nós, em `src/agent/runtime/state_graph.py`:
+Um ciclo ReAct com uma parada para confirmação, em `src/agent/runtime/state_graph.py`:
 
 ```mermaid
 graph LR
     START([START]) --> agent
     agent{{agent — chama o modelo}} -->|sem tool call| END([END])
-    agent -->|com tool call| tools[tools — executa as ferramentas]
+    agent -->|só consultas| tools[tools — executa as ferramentas]
+    agent -->|alguma operação| approval[approval — espera o usuário]
+    approval -->|aprovadas| tools
+    approval -->|todas canceladas| agent
     tools --> agent
 ```
 
-O estado é uma única chave `messages`, com o reducer `add_messages` do LangGraph cuidando de acumular o histórico. O roteamento usa `tools_condition`: se a última mensagem do modelo traz `tool_calls`, vai para o nó `tools`; senão, termina.
+O estado é uma única chave `messages`, com o reducer `add_messages` do LangGraph cuidando de acumular o histórico. Se a última mensagem do modelo não traz `tool_calls`, o turno termina; se traz só consultas, elas rodam direto; se alguma grava dados, o grafo passa antes pelo nó `approval`.
+
+As ferramentas recebem o usuário e o pool de conexões pelo **contexto da execução** (`AgentContext`, lido via `ToolRuntime`), que o modelo não vê e que não entra nos checkpoints. O REPL roda sem contexto, e as ferramentas de carteira respondem que só funcionam na interface web.
+
+### Confirmação das operações
+
+As ferramentas que gravam dados não rodam sem o usuário. Quando o modelo pede uma delas, o nó `approval` chama `interrupt()`, e o grafo para com o estado salvo no checkpoint do turno. A interface mostra um cartão por operação, com os valores que o agente propôs em campos editáveis e os botões **Confirmar** e **Cancelar**. Quando todas as operações do passo estão decididas, as decisões vão para `/api/approvals`, que as valida com o mesmo schema da ferramenta e retoma o grafo com `Command(resume=...)`.
+
+- **A pausa fica num nó próprio, não dentro da ferramenta.** Ao retomar, o LangGraph roda de novo o nó que pausou, do começo. Num nó sem efeito colateral, repetir não muda nada; dentro de uma ferramenta, outras ferramentas do mesmo passo rodariam duas vezes.
+- **O ativo não se edita no cartão.** O ticker aparece fixo no cabeçalho, e o servidor ignora qualquer ticker diferente do proposto. Um ativo errado não é um valor a ajustar, e sim outra operação: o usuário cancela e pede a correção ao agente.
+- **Só as aprovadas chegam às ferramentas.** O `ToolNode` executa todas as tool calls da última mensagem do modelo; por isso o nó de aprovação despacha uma tarefa por operação aprovada, via `Send`. As canceladas recebem uma resposta "o usuário cancelou", e o modelo explica.
+- **A correção do usuário chega ao modelo.** O resultado da ferramenta traz `user_edits`, com o valor proposto e o aprovado. Sem isso, o modelo vê um valor diferente do que o usuário disse e conclui que errou.
+- **A mensagem da pausa guarda o pedido e a decisão** (`payload.approval`), lado a lado. A mensagem do modelo fica com os valores aprovados, que são os que o histórico entrega dali em diante.
+- **Uma pergunta nova no lugar da resposta ao cartão** encerra a confirmação como `interrupted`, sem fazer as operações. Depois de um dia, os checkpoints do turno somem e a confirmação expira (`410`).
+
+### Carteira e watchlist
+
+A carteira é um **livro de operações** (`core.portfolio_trades`): cada compra e cada venda é uma linha que nunca muda. A posição de cada ativo sai da aplicação das operações em ordem de data, pelo **preço médio**, o critério da Receita e da B3: uma compra recalcula a média ponderada, e uma venda reduz a quantidade sem mexer nela. Uma venda que deixaria a posição negativa em qualquer data é recusada. O preço fica na **moeda em que o usuário pagou** (`price_currency`), que pode ser diferente da moeda em que a Yahoo cota o ativo (`quote_currency`): Bitcoin comprado em reais é `BTC-USD` com preço em BRL. O custo fica nessa moeda, e só o valor atual é convertido, pelo câmbio do momento da consulta (`USDBRL=X`), então nenhum câmbio histórico é necessário. Cada ativo usa uma só moeda de pagamento, para o preço médio não misturar moedas. Os totais são por moeda de pagamento.
+
+Na interface, a consulta à carteira aparece como as outras consultas, no aviso recolhível; ao abrir, as posições, os totais por moeda e as operações vêm em tabela, acima do JSON. Cada ferramenta pode ganhar uma vista assim em `TOOL_VIEWS`, no `app.js`.
+
+A watchlist (`core.watchlist`) guarda o ativo, a operação pretendida (`compra`, `venda` ou `short`), o preço alvo e, opcionalmente, a quantidade, que transforma o acompanhamento num plano. O mesmo ativo pode aparecer mais de uma vez, com operações ou alvos diferentes.
 
 ### Conversas no banco
 
@@ -189,7 +226,7 @@ O histórico da conversa vive nas tabelas do schema `agent`, e não no checkpoin
 
 `agent.thread_path` devolve o caminho ativo em ordem, e é dele que sai o histórico entregue ao modelo a cada turno. Respostas interrompidas ou com erro ficam fora desse histórico, assim como pedidos de ferramenta que nunca receberam resposta, que os provedores recusam.
 
-Cada mensagem tem um estado: `streaming` enquanto é gerada, depois `completed`, `interrupted` (o cliente desconectou ou o servidor caiu) ou `failed`. Quando o servidor sobe, o que ficou em `streaming` vira `interrupted`.
+Cada mensagem tem um estado: `streaming` enquanto é gerada, `awaiting_approval` enquanto o turno espera a confirmação de uma operação, depois `completed`, `interrupted` (o cliente desconectou, o servidor caiu ou a confirmação foi abandonada) ou `failed`. Quando o servidor sobe, o que ficou em `streaming` vira `interrupted`.
 
 ### Os checkpoints
 
@@ -231,6 +268,8 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 | `tool_start` | `{name, input}` | Abre o aviso "consultando…" e preenche *Argumentos* |
 | `tool_end` | `{name, output}` | Fecha o aviso e preenche *Resultados* |
 | `ticker` | cotação resumida | Um cartão de ticker |
+| `approval` | `{message_id, requests}` | Os cartões de confirmação, com título, valores e schema de cada operação |
+| `operation` | `{tool_call_id, status, message}` | O resultado de uma operação confirmada, no cartão dela |
 | `error` | `{message}` | Aviso de falha na conversa |
 | `done` | `{message_id, state}` | Fim do fluxo; a mensagem que fecha o turno recebe as ações de regerar e bifurcar |
 
@@ -241,6 +280,7 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 | `POST` | `/api/session` | Cria o usuário anônimo na primeira visita e grava o cookie assinado |
 | `POST` | `/api/chat` | Recebe `{message, thread_id?}` e devolve `text/event-stream`; sem `thread_id`, cria a conversa |
 | `POST` | `/api/regenerate` | Recebe `{thread_id, message_id}` e transmite uma nova resposta para aquele turno |
+| `POST` | `/api/approvals` | Recebe `{thread_id, message_id, decisions}` e transmite a continuação do turno pausado |
 | `POST` | `/api/threads/{id}/fork` | Recebe `{message_id}` e devolve a nova conversa |
 | `GET` | `/api/threads/{id}` | O caminho ativo da conversa, agrupado em turnos |
 | `GET` | `/api/health` | Confirma que o grafo compilou e lista seus nós |

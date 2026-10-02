@@ -5,7 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-from src.agent.tools.definition import TOOLS
+from src.agent.tools.registry import TOOLS
 
 load_dotenv()
 

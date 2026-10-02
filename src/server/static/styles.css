@@ -351,6 +351,43 @@ button { font: inherit; color: inherit; cursor: pointer; }
   animation: rise 260ms ease both;
 }
 
+/* Vista em tabela do resultado (a carteira): ocupa a largura toda do detalhe,
+   acima das caixas de JSON. */
+/* Sem isto, um item de grid cresce até caber a tabela inteira e empurra a
+   página para os lados; com ele, a tabela rola dentro do próprio quadro. */
+.tool-detail > *,
+.tool-view > * { min-width: 0; }
+
+.tool-view {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 14px;
+  padding: 12px 18px 8px;
+  background: var(--card);
+  border: 1px solid var(--rule-firm);
+  border-radius: var(--r-md);
+  font-family: var(--sans);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.tool-view-caption {
+  margin-bottom: 2px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--gray);
+}
+
+.tool-view .table-wrap { margin: 0; }
+.tool-view .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tool-view th.num { text-align: right; }
+.tool-view td:last-child,
+.tool-view th:last-child { padding-right: 0; }
+.tool-view .is-up { color: var(--up); }
+.tool-view .is-down { color: var(--down); }
+.tool-view-empty { margin: 4px 0 8px; color: var(--gray); }
+
 .code-box {
   background: #262a32;
   border-radius: var(--r-md);
@@ -500,6 +537,154 @@ button { font: inherit; color: inherit; cursor: pointer; }
   height: 1px;
   background: rgba(107, 29, 29, 0.25);
 }
+
+/* ──────────────────────────────── Confirmação ───────────────────────────── */
+
+/* Um cartão por operação: os valores que o agente propôs, editáveis até o
+   usuário confirmar ou cancelar. Fica em sans, como o resto da interface. */
+.approval-group {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0;
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.4;
+  animation: rise 320ms ease both;
+}
+
+.approval-card {
+  padding: 15px 18px 16px;
+  background: var(--card);
+  border: 1px solid var(--rule-firm);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-soft);
+}
+
+.approval-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.approval-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* O ativo da operação: fixo, ao lado do título. */
+.approval-subject {
+  margin-left: 8px;
+  padding: 2px 8px;
+  background: rgba(20, 17, 12, 0.05);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-pill);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink-soft);
+  cursor: help;
+}
+
+.approval-status {
+  font-size: 0.74rem;
+  white-space: nowrap;
+  color: var(--gray);
+}
+
+.approval-card[data-status="pending"] .approval-status { color: var(--ink-soft); }
+.approval-card[data-status="completed"] .approval-status { color: var(--up); }
+.approval-card[data-status="failed"] .approval-status,
+.approval-card[data-status="cancelled"] .approval-status { color: var(--accent); }
+
+.approval-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 14px;
+}
+
+.approval-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  font-size: 0.74rem;
+  color: var(--gray);
+}
+
+.approval-field input,
+.approval-field select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--paper);
+  border: 1px solid var(--rule-firm);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 0.92rem;
+  color: var(--ink);
+  transition: border-color 180ms ease;
+}
+
+.approval-field input:focus,
+.approval-field select:focus {
+  outline: none;
+  border-color: rgba(20, 17, 12, 0.4);
+}
+
+/* Decidido: os valores ficam como texto, sem cara de campo. */
+.approval-field input:disabled,
+.approval-field select:disabled {
+  background: transparent;
+  border-color: transparent;
+  padding-left: 0;
+  color: var(--ink-soft);
+  opacity: 1;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.approval-message,
+.approval-error {
+  margin-top: 10px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--accent);
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.approval-button {
+  padding: 8px 18px;
+  background: transparent;
+  border: 1px solid var(--rule-firm);
+  border-radius: var(--r-pill);
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  transition: background 180ms ease, color 180ms ease, border-color 180ms ease;
+}
+
+.approval-button:hover,
+.approval-button:focus-visible {
+  border-color: rgba(20, 17, 12, 0.34);
+  color: var(--ink);
+  outline: none;
+}
+
+.approval-button.is-primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--card);
+}
+
+.approval-button.is-primary:hover,
+.approval-button.is-primary:focus-visible { background: #000; color: var(--card); }
 
 /* ───────────────────────────── Cartões de ticker ────────────────────────── */
 
