@@ -666,14 +666,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .combo:has(input:disabled)::after { display: none; }
 
-/* Larga o bastante para o rótulo inteiro; perto da borda direita da tela,
-   abre alinhada à direita do campo (`is-right`, decidido ao abrir). */
+/* Larga o bastante para o rótulo inteiro. Fica no `body`, com posição fixa
+   calculada a partir do campo (`top` ou `bottom`, e `left`), acima de tudo. */
 .combo-list {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 10;
-  min-width: 100%;
+  position: fixed;
+  z-index: 40;
   width: max-content;
   max-width: min(300px, calc(100vw - 32px));
   max-height: 224px;
@@ -685,9 +682,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border: 1px solid var(--rule-firm);
   border-radius: var(--r-sm);
   box-shadow: var(--shadow-lift);
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.4;
 }
-
-.combo-list.is-right { left: auto; right: 0; }
 
 .combo-option {
   padding: 7px 10px;

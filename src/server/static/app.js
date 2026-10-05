@@ -495,6 +495,9 @@ function searchable(text) {
 
 let comboCount = 0;
 
+// Altura máxima da lista aberta, se houver espaço para tanto.
+const COMBO_MAX_HEIGHT = 224;
+
 // Lista com busca: digitar filtra pelo código ou pelo nome, e só um valor da
 // lista pode ser escolhido. Expõe a mesma interface dos campos nativos
 // (`value`, `disabled`, `checkValidity`), então o cartão não distingue os dois.
@@ -525,7 +528,11 @@ function comboBox(key, field, value, required) {
   list.setAttribute("role", "listbox");
   list.hidden = true;
 
-  wrap.append(input, list);
+  // A lista não fica dentro do campo: cada turno da conversa cria o próprio
+  // contexto de empilhamento (a animação de entrada usa `transform`), e ela
+  // ficaria atrás do turno seguinte e da caixa de pergunta. Aberta, ela vai para
+  // o `body` com posição fixa; fechada, sai dele.
+  wrap.append(input);
 
   let current = value ?? "";
   let shown = [];
@@ -547,8 +554,39 @@ function comboBox(key, field, value, required) {
     }
   };
 
+  // Abre para o lado com mais espaço na tela: para baixo ou para cima, e
+  // alinhada à esquerda do campo ou, se não couber, à direita. O espaço útil
+  // desconta o cabeçalho e a caixa de pergunta, que ficam por cima da conversa.
+  const place = () => {
+    const field = input.getBoundingClientRect();
+    const margin = 8;
+    const ceiling = (document.querySelector(".topbar")?.getBoundingClientRect().bottom ?? 0) + margin;
+    const floor = (document.querySelector(".composer")?.getBoundingClientRect().top ?? window.innerHeight) - margin;
+
+    list.style.minWidth = `${field.width}px`;
+    list.style.maxHeight = "";
+    const wanted = Math.min(list.scrollHeight, COMBO_MAX_HEIGHT);
+    const below = floor - field.bottom - 4;
+    const above = field.top - ceiling - 4;
+    const down = below >= wanted || below >= above;
+
+    list.style.maxHeight = `${Math.max(Math.min(wanted, down ? below : above), 72)}px`;
+    list.style.top = down ? `${field.bottom + 4}px` : "";
+    list.style.bottom = down ? "" : `${window.innerHeight - field.top + 4}px`;
+    list.dataset.side = down ? "below" : "above";
+
+    const width = list.offsetWidth;
+    const right = document.documentElement.clientWidth - margin;
+    let left = field.left;
+    if (left + width > right) left = Math.max(margin, Math.min(field.right, right) - width);
+    list.style.left = `${left}px`;
+  };
+
   const close = () => {
     list.hidden = true;
+    list.remove();
+    window.removeEventListener("scroll", place, true);
+    window.removeEventListener("resize", place);
     input.setAttribute("aria-expanded", "false");
     input.removeAttribute("aria-activedescendant");
     // Texto digitado que não virou escolha some: vale o que está selecionado.
@@ -590,15 +628,20 @@ function comboBox(key, field, value, required) {
     highlight(wanted ? (shown.length ? 0 : -1) : shown.findIndex((option) => option.value === current));
   };
 
+  const show = () => {
+    document.body.append(list);
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    place();
+    // A lista acompanha o campo se a página rolar ou a janela mudar de tamanho.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+  };
+
   const open = () => {
     if (input.disabled || !list.hidden) return;
     render("");
-    list.hidden = false;
-    input.setAttribute("aria-expanded", "true");
-    // Sem espaço até a borda do cartão (a última coluna), a lista abre para a esquerda.
-    list.classList.remove("is-right");
-    const edge = (wrap.closest(".approval-card") || document.documentElement).getBoundingClientRect().right;
-    list.classList.toggle("is-right", wrap.getBoundingClientRect().left + list.offsetWidth > edge);
+    show();
     input.select();
   };
 
@@ -606,9 +649,9 @@ function comboBox(key, field, value, required) {
   input.addEventListener("click", open);
   input.addEventListener("blur", close);
   input.addEventListener("input", () => {
-    list.hidden = false;
-    input.setAttribute("aria-expanded", "true");
     render(input.value);
+    if (list.hidden) show();
+    else place();
   });
   input.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
