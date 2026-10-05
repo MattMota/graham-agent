@@ -931,8 +931,12 @@ function renderStoredTurn(turn) {
       else note.abort();
     }
   }
-  // Enquanto espera a confirmação, o turno não terminou: sem regerar nem bifurcar.
-  if (turn.state !== "awaiting_approval") addTurnActions(body, turn.id, turn.state);
+  // Enquanto espera a confirmação ou segue gerando, o turno não terminou: sem
+  // regerar nem bifurcar ainda.
+  body.closest(".turn").dataset.messageId = turn.id;
+  if (turn.state !== "awaiting_approval" && turn.state !== "streaming") {
+    addTurnActions(body, turn.id, turn.state);
+  }
 }
 
 async function openThread(id) {
@@ -961,12 +965,22 @@ async function openThread(id) {
     if (turn.id === data.forked_from_message_id) thread.append(forkNote());
   }
   window.scrollTo({ top: document.body.scrollHeight });
+
+  // Um turno ainda rodando no servidor: o histórico veio até a mensagem de onde
+  // ele parte, e o resto é redesenhado lendo o stream do começo. Depois de uma
+  // confirmação, a continuação entra no mesmo turno; senão, num turno novo.
+  if (data.active_stream) {
+    const { id: liveId, after_message_id: after } = data.active_stream;
+    const continued = thread.querySelector(`.turn-agent[data-message-id="${after}"] .turn-body`);
+    await streamTurn(`/api/streams/${liveId}`, null, continued || addTurn("agent", "Graham Agent"));
+  }
 }
 
 /* ─────────────────────────────────── Envio ──────────────────────────────── */
 
 // Transmite um turno do agente para dentro de `body`: serve a uma pergunta
-// nova, a uma resposta regerada e à continuação depois da confirmação.
+// nova, a uma resposta regerada, à continuação depois da confirmação e à
+// reconexão a um turno em andamento (`payload` nulo, um GET no stream).
 // `onHttpError` recebe as recusas do servidor em vez de virarem aviso de erro.
 async function streamTurn(url, payload, body, { onHttpError } = {}) {
   setStreaming(true);
@@ -987,6 +1001,11 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
   // Chega no evento `done`: a mensagem que fecha o turno e como ele terminou.
   let outcome = null;
 
+  // O id do stream chega no primeiro evento, e cada evento traz o seu: com os
+  // dois, a leitura retoma exatamente de onde parou se a conexão cair.
+  let streamId = null;
+  let lastEventId = null;
+
   const openBlock = () => {
     if (!block) {
       block = document.createElement("div");
@@ -1003,8 +1022,93 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
     blockText = "";
   };
 
+  const handle = (name, data) => {
+    if (name === "stream") {
+      streamId = data.id;
+
+    } else if (name === "thread") {
+      threadId = data.id;
+      storeThreadId(data.id);
+
+    } else if (name === "token") {
+      openBlock();
+      blockText += data.text;
+      block.innerHTML = renderMarkdown(blockText);
+      scrollToEnd();
+
+    } else if (name === "tool_start") {
+      // O que já foi dito fica fechado acima do aviso.
+      closeBlock();
+
+      const note = toolBlock(data.name, data.input);
+      body.append(note.root);
+
+      const queue = pendingNotes.get(data.name) || [];
+      queue.push(note);
+      pendingNotes.set(data.name, queue);
+      scrollToEnd();
+
+    } else if (name === "tool_end") {
+      pendingNotes.get(data.name)?.shift()?.finish(data.output);
+
+    } else if (name === "approval") {
+      closeBlock();
+      body.append(approvalGroup(body, data.message_id, data.requests));
+      scrollToEnd();
+
+    } else if (name === "operation") {
+      approvalCards.get(data.tool_call_id)?.setStatus(data.status, data.message);
+
+    } else if (name === "ticker") {
+      tickers.push(data);
+
+    } else if (name === "error") {
+      body.append(errorNote(data.message));
+
+    } else if (name === "done") {
+      outcome = data;
+    }
+  };
+
+  // Lê um corpo SSE até ele acabar; lança se a conexão cair no meio.
+  const read = async (response) => {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Cada frame SSE termina em linha em branco.
+      let split;
+      while ((split = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+
+        const id = frame.match(/^id:\s*(.+)$/m)?.[1];
+        if (id) lastEventId = id;
+
+        // Comentários (`: ping`) só mantêm a conexão viva.
+        const name = frame.match(/^event:\s*(.+)$/m)?.[1];
+        const raw = frame.match(/^data:\s*(.*)$/m)?.[1];
+        if (!name || raw === undefined) continue;
+
+        let data;
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          continue; // um frame malformado não derruba o resto da resposta
+        }
+        handle(name, data);
+      }
+    }
+  };
+
   try {
-    const response = await fetch(url, {
+    let response = await fetch(url, payload === null ? {} : {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -1024,77 +1128,26 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
       throw new Error(detail || `O servidor respondeu ${response.status}.`);
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Cada frame SSE termina em linha em branco.
-      let split;
-      while ((split = buffer.indexOf("\n\n")) !== -1) {
-        const frame = buffer.slice(0, split);
-        buffer = buffer.slice(split + 2);
-
-        const name = frame.match(/^event:\s*(.+)$/m)?.[1];
-        const raw = frame.match(/^data:\s*(.*)$/m)?.[1];
-        if (!name || raw === undefined) continue;
-
-        let data;
+    // O turno roda no servidor independente desta conexão. Se ela cair, a
+    // leitura reconecta ao stream e continua do último evento recebido.
+    for (let attempt = 0; !outcome; attempt++) {
+      if (attempt > 0) {
+        if (!streamId || attempt > 3) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
         try {
-          data = JSON.parse(raw);
+          response = await fetch(`/api/streams/${streamId}?after=${lastEventId || "0"}`);
         } catch {
-          continue; // um frame malformado não derruba o resto da resposta
+          continue;
         }
-
-        if (name === "thread") {
-          threadId = data.id;
-          storeThreadId(data.id);
-
-        } else if (name === "token") {
-          openBlock();
-          blockText += data.text;
-          block.innerHTML = renderMarkdown(blockText);
-          scrollToEnd();
-
-        } else if (name === "tool_start") {
-          // O que já foi dito fica fechado acima do aviso.
-          closeBlock();
-
-          const note = toolBlock(data.name, data.input);
-          body.append(note.root);
-
-          const queue = pendingNotes.get(data.name) || [];
-          queue.push(note);
-          pendingNotes.set(data.name, queue);
-          scrollToEnd();
-
-        } else if (name === "tool_end") {
-          pendingNotes.get(data.name)?.shift()?.finish(data.output);
-
-        } else if (name === "approval") {
-          closeBlock();
-          body.append(approvalGroup(body, data.message_id, data.requests));
-          scrollToEnd();
-
-        } else if (name === "operation") {
-          approvalCards.get(data.tool_call_id)?.setStatus(data.status, data.message);
-
-        } else if (name === "ticker") {
-          tickers.push(data);
-
-        } else if (name === "error") {
-          body.append(errorNote(data.message));
-
-        } else if (name === "done") {
-          outcome = data;
-        }
+        if (!response.ok || !response.body) break;
+      }
+      try {
+        await read(response);
+      } catch {
+        /* a conexão caiu; a próxima volta reconecta */
       }
     }
+    if (!outcome) throw new Error("A conexão caiu antes do fim da resposta.");
   } catch (error) {
     body.append(errorNote(`Não foi possível completar a consulta. ${error.message}`));
   } finally {
@@ -1104,12 +1157,16 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
     for (const queue of pendingNotes.values()) {
       for (const note of queue) note.abort();
     }
-    if (outcome && outcome.state !== "awaiting_approval") {
+    if (outcome?.message_id && outcome.state !== "awaiting_approval") {
       addTurnActions(body, outcome.message_id, outcome.state);
     }
     setStreaming(false);
     input.focus();
   }
+
+  // Sem mensagem no `done`, o servidor parou no meio do turno: o que ficou
+  // gravado (e marcado como interrompido) está no Postgres.
+  if (outcome && !outcome.message_id && threadId) await openThread(threadId);
 }
 
 async function ask(question) {

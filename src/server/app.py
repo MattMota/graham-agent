@@ -16,7 +16,7 @@ from typing import Any
 from uuid import UUID
 
 import anyio
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -27,8 +27,9 @@ from src.agent.runtime.context import AgentContext
 from src.agent.runtime.state_graph import AgentState, compile_graph
 from src.agent.tools.definition import get_current_stock_price
 from src.agent.tools.registry import APPROVAL_REQUIRED, TOOLS
+from src.server import streams
 from src.server.recorder import TurnRecorder
-from src.storage import conversations
+from src.storage import cache, conversations
 from src.storage.database import create_pool
 from src.storage.history import split_turns, to_langchain
 
@@ -79,6 +80,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not os.getenv("SESSION_SECRET"):
         raise RuntimeError("Defina SESSION_SECRET no .env para assinar o cookie do usuário.")
 
+    try:
+        redis = await cache.connect()
+    except Exception as error:
+        raise RuntimeError(
+            f"Redis indisponível em REDIS_URL ({type(error).__name__}). "
+            "Suba os serviços com: docker compose up -d"
+        ) from error
+
     async with create_pool() as pool:
         saver = AsyncPostgresSaver(pool)
         await saver.setup()
@@ -86,15 +95,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         interrupted = await conversations.interrupt_streaming(pool)
         if interrupted:
             logger.info("%d mensagem(ns) em geração marcada(s) como interrompida(s)", interrupted)
+        if recovered := await streams.recover(redis):
+            logger.info("%d stream(s) do processo anterior encerrado(s)", recovered)
 
         app.state.pool = pool
+        app.state.redis = redis
         app.state.graph = compile_graph(saver)
+        # Os turnos em andamento, que rodam fora das conexões HTTP.
+        app.state.turns = set()
 
         purge = asyncio.create_task(_purge_checkpoints(pool, saver))
         try:
             yield
         finally:
             purge.cancel()
+            # Cancelados, os turnos gravam o que tinham como interrompido e
+            # fecham os seus streams antes de o pool e o Redis fecharem.
+            for task in app.state.turns:
+                task.cancel()
+            await asyncio.gather(*app.state.turns, return_exceptions=True)
+            await cache.close()
 
 
 app = FastAPI(title="Graham Agent", description="Seu corretor de confiança", lifespan=lifespan)
@@ -580,6 +600,27 @@ def _display_turn(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"role": "assistant", "id": str(last["id"]), "state": state, "blocks": blocks}
 
 
+async def _reserve(request: Request, thread: dict[str, Any]) -> str:
+    try:
+        return await streams.reserve(request.app.state.redis, thread["id"], thread["user_id"])
+    except streams.ThreadBusy:
+        raise HTTPException(
+            status_code=409, detail="Já há uma resposta em andamento nesta conversa."
+        ) from None
+
+
+def _launch(
+    request: Request, thread: dict[str, Any], stream_id: str, frames: AsyncIterator[str]
+) -> StreamingResponse:
+    """Põe o turno para rodar em segundo plano e devolve a leitura do stream dele.
+
+    Se o navegador desconectar, só a leitura acaba; o turno segue até o fim.
+    """
+    app = request.app
+    streams.spawn(app.state.turns, streams.produce(app.state.redis, thread["id"], stream_id, frames))
+    return _event_stream(streams.consume(app.state.redis, stream_id))
+
+
 # ─────────────────────────────────── Rotas ──────────────────────────────────
 
 
@@ -606,18 +647,26 @@ async def session(request: Request) -> JSONResponse:
 @app.post("/api/chat")
 async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     """Responde a uma pergunta transmitindo os tokens conforme são gerados."""
-    pool = request.app.state.pool
+    pool, redis = request.app.state.pool, request.app.state.redis
     if body.thread_id is None:
         title = body.message.strip().splitlines()[0][:MAX_TITLE]
         thread = await conversations.create_thread(pool, _require_user(request), title)
     else:
         thread = await _require_thread(request, body.thread_id)
-        await _abandon_pending_approval(pool, thread)
 
-    question_id = await conversations.add_message(
-        pool, thread["id"], thread["head_message_id"], "user", "completed", content=body.message
-    )
-    return _event_stream(_start_turn(request.app, thread, question_id))
+    # A reserva vem antes de qualquer escrita: com outro turno em andamento,
+    # a pergunta nem chega a ser gravada.
+    stream_id = await _reserve(request, thread)
+    try:
+        await _abandon_pending_approval(pool, thread)
+        question_id = await conversations.add_message(
+            pool, thread["id"], thread["head_message_id"], "user", "completed", content=body.message
+        )
+        await streams.describe(redis, thread["id"], stream_id, question_id)
+    except BaseException:
+        await streams.release(redis, thread["id"], stream_id)
+        raise
+    return _launch(request, thread, stream_id, _start_turn(request.app, thread, question_id))
 
 
 @app.post("/api/regenerate")
@@ -629,8 +678,16 @@ async def regenerate(body: RegenerateRequest, request: Request) -> StreamingResp
     question = next((row for row in reversed(path) if row["role"] == "user"), None)
     if question is None:
         raise HTTPException(status_code=400, detail="Não há pergunta antes desta mensagem.")
-    await _abandon_pending_approval(request.app.state.pool, thread)
-    return _event_stream(_start_turn(request.app, thread, question["id"]))
+
+    redis = request.app.state.redis
+    stream_id = await _reserve(request, thread)
+    try:
+        await _abandon_pending_approval(request.app.state.pool, thread)
+        await streams.describe(redis, thread["id"], stream_id, question["id"])
+    except BaseException:
+        await streams.release(redis, thread["id"], stream_id)
+        raise
+    return _launch(request, thread, stream_id, _start_turn(request.app, thread, question["id"]))
 
 
 @app.post("/api/approvals")
@@ -677,14 +734,35 @@ async def approve(body: ApprovalRequest, request: Request) -> StreamingResponse:
             detail="A confirmação expirou e as operações não foram feitas. Peça de novo ao agente.",
         )
 
-    await conversations.revise_message(
-        pool,
-        pause["id"],
-        state="completed",
-        payload={"approval": {"requests": requests, "decisions": decisions}},
-    )
+    redis = request.app.state.redis
+    stream_id = await _reserve(request, thread)
+    try:
+        await conversations.revise_message(
+            pool,
+            pause["id"],
+            state="completed",
+            payload={"approval": {"requests": requests, "decisions": decisions}},
+        )
+        await streams.describe(redis, thread["id"], stream_id, pause["id"])
+    except BaseException:
+        await streams.release(redis, thread["id"], stream_id)
+        raise
     recorder = TurnRecorder.resume(pool, thread["id"], first_id, pause["id"], pause["parent_id"])
-    return _event_stream(_resume_turn(request.app, thread, recorder, decisions))
+    return _launch(request, thread, stream_id, _resume_turn(request.app, thread, recorder, decisions))
+
+
+@app.get("/api/streams/{stream_id}")
+async def resume_stream(
+    stream_id: UUID,
+    request: Request,
+    after: str = Query(default="0", pattern=r"^\d+(-\d+)?$", description="Último evento recebido."),
+) -> StreamingResponse:
+    """Reconecta a um turno: os eventos depois de `after`, ou todos, sem ele."""
+    redis = request.app.state.redis
+    meta = await streams.owner(redis, str(stream_id))
+    if meta is None or meta["user_id"] != str(_require_user(request)):
+        raise HTTPException(status_code=404, detail="Stream não encontrado ou já expirado.")
+    return _event_stream(streams.consume(redis, str(stream_id), after))
 
 
 @app.post("/api/threads/{thread_id}/fork")
@@ -704,12 +782,29 @@ async def get_thread(thread_id: UUID, request: Request) -> dict[str, Any]:
     """O caminho ativo da conversa, agrupado em turnos para a interface."""
     thread = await _require_thread(request, thread_id)
     path = await conversations.thread_path(request.app.state.pool, thread_id)
+
+    # Com um turno em andamento, o histórico para na mensagem a partir da qual
+    # ele escreve; a interface redesenha o resto lendo o stream do começo, sem
+    # mostrar duas vezes o que já foi gravado.
+    live = await streams.active(request.app.state.redis, thread_id)
+    if live:
+        for index, row in enumerate(path):
+            if str(row["id"]) == live["after_message_id"]:
+                path = path[: index + 1]
+                break
+
+    turns = [_display_turn(turn) for turn in split_turns(path)]
+    if live and turns and turns[-1]["role"] == "assistant" and turns[-1]["id"] == live["after_message_id"]:
+        # A retomada depois de uma confirmação continua este mesmo turno.
+        turns[-1]["state"] = "streaming"
+
     forked_from = thread["forked_from_message_id"]
     return _json_safe({
         "id": str(thread["id"]),
         "title": thread["title"],
         "forked_from_message_id": str(forked_from) if forked_from else None,
-        "turns": [_display_turn(turn) for turn in split_turns(path)],
+        "turns": turns,
+        "active_stream": {"id": live["id"], "after_message_id": live["after_message_id"]} if live else None,
     })
 
 

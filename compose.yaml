@@ -1,9 +1,9 @@
-# Banco de dados local do Graham: Postgres 18 com a extensão pgvector.
+# Serviços locais do Graham: Postgres 18 com pgvector e Redis.
 #
-#   docker compose up -d      sobe o banco em segundo plano
+#   docker compose up -d      sobe tudo em segundo plano
 #   docker compose ps         mostra se está de pé (e saudável)
 #   docker compose logs db    mostra o que o Postgres escreveu no log
-#   docker compose down       desliga o banco; os dados continuam no volume
+#   docker compose down       desliga tudo; os dados do Postgres continuam no volume
 #   docker compose down -v    desliga e APAGA os dados
 
 services:
@@ -24,6 +24,19 @@ services:
       - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U graham -d graham"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    # Só cache e streams com TTL de 1h: nada aqui precisa sobreviver a um
+    # reinício, então a persistência em disco fica desligada.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -9,6 +9,7 @@ import pandas as pd
 import yfinance as yf
 from langchain_core.tools import tool
 
+from src.storage.cache import cached
 from src.agent.tools.schemas.input import (
     INDUSTRY_KEYS,
     CompanySearchInput,
@@ -25,6 +26,13 @@ from src.agent.tools.schemas.output import (
     StockQuote,
     TickerNews,
 )
+
+
+# Por quanto tempo cada resposta da Yahoo fica no cache, em segundos. A cotação
+# não entra: muda a todo momento, e um preço velho é pior do que nenhum.
+NEWS_TTL = 60 * 60
+# Tickers por empresa e empresas por setor quase nunca mudam.
+CATALOG_TTL = 24 * 60 * 60
 
 
 def _ticker(ticker_name: str) -> yf.Ticker:
@@ -139,6 +147,7 @@ def get_current_stock_price(ticker_name: str) -> dict[str, Any]:
     ),
     args_schema=TickerNewsInput,
 )
+@cached("noticias_acao", ttl=NEWS_TTL)
 def get_ticker_news(
     ticker_name: str,
     count: int = 5,
@@ -178,6 +187,7 @@ def get_ticker_news(
     ),
     args_schema=CompanySearchInput,
 )
+@cached("buscar_ticker_por_empresa", ttl=CATALOG_TTL)
 def find_ticker_by_company(company_name: str, count: int = 5) -> dict[str, Any]:
     search = yf.Search(
         company_name,
@@ -216,6 +226,7 @@ def find_ticker_by_company(company_name: str, count: int = 5) -> dict[str, Any]:
     ),
     args_schema=IndustrySearchInput,
 )
+@cached("buscar_tickers_por_industria", ttl=CATALOG_TTL)
 def find_tickers_by_industry(
     industry: str, count: int = 10, region: str = "US"
 ) -> dict[str, Any]:

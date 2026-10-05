@@ -40,7 +40,7 @@ As ferramentas são registradas automaticamente: `TOOLS`, em `src/agent/tools/de
 - **Python 3.13+**
 - **[uv](https://docs.astral.sh/uv/)** para gerenciar o ambiente e as dependências
 - Uma **chave de API** de um provedor compatível com a API da OpenAI
-- **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** para rodar o Postgres local (no Windows, sobre o WSL2)
+- **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** para rodar o Postgres e o Redis locais (no Windows, sobre o WSL2)
 
 Não é preciso Node nem qualquer passo de build: o front-end é HTML, CSS e JavaScript puros, servidos direto pelo FastAPI.
 
@@ -57,6 +57,7 @@ Declaradas em `pyproject.toml` e resolvidas pelo `uv`:
 | `fastapi` + `uvicorn` | Servidor HTTP e streaming SSE |
 | `psycopg` + `psycopg-pool` | Driver e pool de conexões do Postgres |
 | `langgraph-checkpoint-postgres` | Checkpoints do grafo no Postgres |
+| `redis` | Cache dos dados de mercado e streams retomáveis |
 | `dotenv` | Carrega as credenciais do `.env` |
 
 ---
@@ -78,21 +79,24 @@ MODEL_PROVIDER_BASE_URL=https://ai-gateway.vercel.sh/v1
 MODEL_PROVIDER_API_KEY=sua-chave-aqui
 DATABASE_URL=postgresql://graham:graham@127.0.0.1:5432/graham?connect_timeout=10
 SESSION_SECRET=uma-sequencia-aleatoria-longa
+REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
 `MODEL_PROVIDER_BASE_URL` precisa apontar para um endpoint compatível com a API de *chat completions* da OpenAI. Sem ela, o `ChatOpenAI` cai no padrão (`api.openai.com`) e a chave do seu provedor é rejeitada com `401`.
 
 `DATABASE_URL` aponta para o Postgres do `compose.yaml`. Use `127.0.0.1`, não `localhost`: no Windows, `localhost` resolve primeiro para o IPv6 (`::1`), onde a porta não está publicada, e a conexão assíncrona do psycopg fica presa nesse endereço até o tempo limite em vez de passar para o IPv4. O `connect_timeout` faz qualquer falha de conexão aparecer em 10 segundos, em vez de travar. `SESSION_SECRET` assina o cookie que identifica o usuário anônimo; gere um com `uv run python -c "import secrets; print(secrets.token_urlsafe(32))"`. Trocá-lo invalida os cookies existentes, e cada navegador passa a ser um usuário novo.
 
-### Banco de dados
+### Banco de dados e Redis
 
 ```bash
-docker compose up -d        # sobe o Postgres 18 com pgvector
+docker compose up -d        # sobe o Postgres 18 com pgvector e o Redis
 docker compose ps           # espere o status "healthy"
 uv run db/migrate.py        # aplica as migrations pendentes
 ```
 
 As migrations são arquivos SQL numerados em `db/migrations/`, aplicados em ordem e registrados em `public.schema_migrations`. As tabelas dos checkpoints ficam de fora: o `AsyncPostgresSaver` as cria no schema `langgraph` quando o servidor sobe.
+
+O Redis não guarda nada em disco: tudo nele é cache ou stream com TTL. Reiniciá-lo só custa refazer consultas à Yahoo e encerrar os turnos que estavam em andamento. Para espiá-lo, `docker compose exec redis redis-cli` abre um terminal (`KEYS graham:*` lista as chaves).
 
 Para explorar o banco, `docker compose exec db psql -U graham` abre um terminal SQL (`\dn` lista os schemas, `\q` sai). `docker compose down` desliga o banco e mantém os dados; `docker compose down -v` os apaga.
 
@@ -167,11 +171,13 @@ src/
 ├── server/
 │   ├── app.py               FastAPI: sessão, conversas, SSE, cartões de ticker
 │   ├── recorder.py          Grava as mensagens de um turno conforme o grafo as produz
+│   ├── streams.py           Turnos em segundo plano, gravados em Redis Streams retomáveis
 │   └── static/
 │       ├── index.html
 │       ├── styles.css
 │       └── app.js           Cliente SSE, Markdown, histórico, ações e cartões de confirmação
 └── storage/
+    ├── cache.py             Cache no Redis: dados de mercado e caminho das conversas
     ├── database.py          Pool de conexões
     ├── conversations.py     Consultas sobre usuários, threads e mensagens
     ├── history.py           Converte o caminho da thread no histórico do modelo
@@ -226,7 +232,30 @@ O histórico da conversa vive nas tabelas do schema `agent`, e não no checkpoin
 
 `agent.thread_path` devolve o caminho ativo em ordem, e é dele que sai o histórico entregue ao modelo a cada turno. Respostas interrompidas ou com erro ficam fora desse histórico, assim como pedidos de ferramenta que nunca receberam resposta, que os provedores recusam.
 
-Cada mensagem tem um estado: `streaming` enquanto é gerada, `awaiting_approval` enquanto o turno espera a confirmação de uma operação, depois `completed`, `interrupted` (o cliente desconectou, o servidor caiu ou a confirmação foi abandonada) ou `failed`. Quando o servidor sobe, o que ficou em `streaming` vira `interrupted`.
+Cada mensagem tem um estado: `streaming` enquanto é gerada, `awaiting_approval` enquanto o turno espera a confirmação de uma operação, depois `completed`, `interrupted` (o servidor parou no meio do turno ou a confirmação foi abandonada) ou `failed`. Quando o servidor sobe, o que ficou em `streaming` vira `interrupted`.
+
+### Streams retomáveis
+
+Um turno não depende da conexão do navegador. O servidor roda o turno em segundo plano e grava cada evento SSE num **Redis Stream**; a resposta HTTP só lê desse stream. Se a conexão cair (a página recarregou, a rede piscou), o turno continua até o fim e é gravado inteiro.
+
+- **Recarregar a página no meio de uma resposta:** `GET /api/threads/{id}` devolve o histórico até a mensagem de onde o turno parte e o `active_stream`. A interface redesenha o resto lendo o stream do começo e continua ao vivo.
+- **A conexão cair sem recarregar:** cada evento traz o id do Redis no campo `id:` do SSE. A interface reconecta em `GET /api/streams/{id}?after=<último id>` e recebe só o que faltou.
+- **Um turno por conversa:** enquanto há um em andamento, outra pergunta, regeneração ou confirmação na mesma conversa recebe `409`.
+- **O servidor parar no meio:** na subida seguinte, a mensagem em geração vira `interrupted` no Postgres, e o stream recebe um `done` final, para quem estiver lendo saber que acabou.
+
+Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da conversa (`graham:thread:{id}:active`).
+
+### Cache
+
+| O quê | Chave | TTL | Observações |
+|---|---|---|---|
+| Notícias | `graham:market:noticias_acao:*` | 1h | |
+| Busca de ticker e triagem por setor | `graham:market:buscar_*:*` | 24h | Mudam raramente |
+| Cotação | | | **Sem cache:** muda a todo momento, e um preço velho é pior do que nenhum |
+
+As conversas ficam fora do cache de propósito. Ler o caminho de uma thread no Postgres custa cerca de 1 ms, nada perto dos segundos de um turno, quase todos à espera do modelo. Uma cópia no Redis ocuparia memória proporcional às conversas ativas e traria o risco de mostrar uma versão desatualizada, em troca de um ganho que não aparece. O cache que faz diferença para a conversa é o do provedor do modelo, que reaproveita o começo do prompt entre chamadas; como o histórico só cresce no fim, ele já se beneficia disso.
+
+O cache de mercado falha aberto: se o Redis não responder, os dados vêm direto da Yahoo. Os streams, não: sem Redis, o servidor não sobe.
 
 ### Os checkpoints
 
@@ -263,6 +292,7 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 
 | Evento | Payload | Uso na interface |
 |---|---|---|
+| `stream` | `{id}` | Primeiro evento: o stream do turno, para reconectar se a conexão cair |
 | `thread` | `{id, title}` | Guarda o id da conversa (criada na primeira pergunta) |
 | `token` | `{text}` | Texto da resposta, pedaço a pedaço |
 | `tool_start` | `{name, input}` | Abre o aviso "consultando…" e preenche *Argumentos* |
@@ -283,6 +313,7 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 | `POST` | `/api/approvals` | Recebe `{thread_id, message_id, decisions}` e transmite a continuação do turno pausado |
 | `POST` | `/api/threads/{id}/fork` | Recebe `{message_id}` e devolve a nova conversa |
 | `GET` | `/api/threads/{id}` | O caminho ativo da conversa, agrupado em turnos |
+| `GET` | `/api/streams/{id}` | Reconecta a um turno: os eventos depois de `?after=`, ou todos |
 | `GET` | `/api/health` | Confirma que o grafo compilou e lista seus nós |
 | `GET` | `/` | A interface |
 | `GET` | `/static/*` | CSS e JavaScript |
