@@ -476,23 +476,197 @@ const OPERATION_STATUS = {
 };
 
 // Campos opcionais chegam como `anyOf: [tipo, null]`; o que interessa é o tipo.
+// Os rótulos (`x-labels`) podem estar no campo ou no tipo, conforme o schema.
 function fieldSchema(property) {
   const inner = (property.anyOf || []).find((option) => option.type !== "null") || property;
-  return { ...inner, title: property.title || inner.title, description: property.description || inner.description };
+  return {
+    ...inner,
+    title: property.title || inner.title,
+    description: property.description || inner.description,
+    "x-labels": property["x-labels"] || inner["x-labels"],
+    "x-empty-label": property["x-empty-label"] || inner["x-empty-label"],
+  };
+}
+
+// Sem acentos e sem caixa: "dolar" encontra "Dólar americano".
+function searchable(text) {
+  return text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+let comboCount = 0;
+
+// Lista com busca: digitar filtra pelo código ou pelo nome, e só um valor da
+// lista pode ser escolhido. Expõe a mesma interface dos campos nativos
+// (`value`, `disabled`, `checkValidity`), então o cartão não distingue os dois.
+function comboBox(key, field, value, required) {
+  const labels = field["x-labels"] || {};
+  const options = [
+    // Um campo opcional começa com a opção de deixá-lo em branco.
+    ...(required ? [] : [{ value: "", label: field["x-empty-label"] || "Nenhuma" }]),
+    ...field.enum.map((option) => ({ value: option, label: labels[option] || option })),
+  ];
+  const id = `combo-${++comboCount}`;
+
+  const wrap = document.createElement("div");
+  wrap.className = "combo";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  input.setAttribute("aria-controls", id);
+
+  const list = document.createElement("ul");
+  list.id = id;
+  list.className = "combo-list";
+  list.setAttribute("role", "listbox");
+  list.hidden = true;
+
+  wrap.append(input, list);
+
+  let current = value ?? "";
+  let shown = [];
+  let active = -1;
+
+  const labelOf = (option) => options.find((item) => item.value === option)?.label ?? "";
+
+  const highlight = (index) => {
+    active = index;
+    list.querySelectorAll(".combo-option").forEach((item, position) => {
+      item.classList.toggle("is-active", position === index);
+    });
+    const item = list.querySelector(".combo-option.is-active");
+    if (item) {
+      input.setAttribute("aria-activedescendant", item.id);
+      item.scrollIntoView({ block: "nearest" });
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
+  };
+
+  const close = () => {
+    list.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    // Texto digitado que não virou escolha some: vale o que está selecionado.
+    input.value = labelOf(current);
+  };
+
+  const choose = (option) => {
+    current = option.value;
+    input.setCustomValidity("");
+    close();
+  };
+
+  const render = (query) => {
+    const wanted = searchable(query.trim());
+    shown = wanted
+      ? options.filter((option) => searchable(`${option.value} ${option.label}`).includes(wanted))
+      : options;
+
+    list.replaceChildren(...shown.map((option, index) => {
+      const item = document.createElement("li");
+      item.id = `${id}-${index}`;
+      item.className = "combo-option";
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(option.value === current));
+      item.textContent = option.label;
+      // `mousedown`, e não `click`: o clique tiraria o foco antes e fecharia a lista.
+      item.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        choose(option);
+      });
+      return item;
+    }));
+    if (!shown.length) {
+      const empty = document.createElement("li");
+      empty.className = "combo-empty";
+      empty.textContent = "Nenhuma opção encontrada";
+      list.append(empty);
+    }
+    highlight(wanted ? (shown.length ? 0 : -1) : shown.findIndex((option) => option.value === current));
+  };
+
+  const open = () => {
+    if (input.disabled || !list.hidden) return;
+    render("");
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    // Sem espaço até a borda do cartão (a última coluna), a lista abre para a esquerda.
+    list.classList.remove("is-right");
+    const edge = (wrap.closest(".approval-card") || document.documentElement).getBoundingClientRect().right;
+    list.classList.toggle("is-right", wrap.getBoundingClientRect().left + list.offsetWidth > edge);
+    input.select();
+  };
+
+  input.addEventListener("focus", open);
+  input.addEventListener("click", open);
+  input.addEventListener("blur", close);
+  input.addEventListener("input", () => {
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    render(input.value);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (list.hidden) return open();
+      if (!shown.length) return;
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      highlight((active + step + shown.length) % shown.length);
+    } else if (event.key === "Enter") {
+      if (list.hidden) return;
+      event.preventDefault();
+      if (shown[active]) choose(shown[active]);
+    } else if (event.key === "Escape" && !list.hidden) {
+      event.preventDefault();
+      close();
+    }
+  });
+
+  input.value = labelOf(current);
+
+  return {
+    element: wrap,
+    control: {
+      name: key,
+      type: "combobox",
+      get value() {
+        return current;
+      },
+      set value(option) {
+        current = option ?? "";
+        input.value = labelOf(current);
+      },
+      get disabled() {
+        return input.disabled;
+      },
+      set disabled(locked) {
+        input.disabled = locked;
+        if (locked) close();
+      },
+      checkValidity() {
+        const valid = !required || current !== "";
+        input.setCustomValidity(valid ? "" : "Escolha uma opção da lista.");
+        return valid;
+      },
+      reportValidity() {
+        input.reportValidity();
+      },
+    },
+  };
 }
 
 function fieldControl(key, property, value, required) {
   const field = fieldSchema(property);
 
+  let element;
   let control;
   if (field.enum) {
-    control = document.createElement("select");
-    for (const option of field.enum) {
-      const item = document.createElement("option");
-      item.value = option;
-      item.textContent = option;
-      control.append(item);
-    }
+    ({ element, control } = comboBox(key, field, value, required));
   } else {
     control = document.createElement("input");
     if (field.format === "date") control.type = "date";
@@ -500,10 +674,11 @@ function fieldControl(key, property, value, required) {
       control.type = "number";
       control.step = "any";
     } else control.type = "text";
+    control.name = key;
+    control.required = required;
+    control.value = value ?? "";
+    element = control;
   }
-  control.name = key;
-  control.required = required;
-  control.value = value ?? "";
 
   const label = document.createElement("label");
   label.className = "approval-field";
@@ -512,7 +687,7 @@ function fieldControl(key, property, value, required) {
   const caption = document.createElement("span");
   caption.textContent = required ? field.title || key : `${field.title || key} (opcional)`;
 
-  label.append(caption, control);
+  label.append(caption, element);
   return { label, control };
 }
 

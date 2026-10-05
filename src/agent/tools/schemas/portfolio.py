@@ -41,8 +41,42 @@ WatchOperation = Annotated[
             "O que o usuário pretende fazer ao atingir o preço alvo: 'compra', "
             "'venda' ou 'short' (venda a descoberto)."
         ),
+        # Rótulos que a interface mostra no lugar dos valores.
+        json_schema_extra={
+            "x-labels": {"compra": "Compra", "venda": "Venda", "short": "Short (venda a descoberto)"}
+        },
     ),
 ]
+
+# Moedas aceitas como moeda do preço: todas têm câmbio na Yahoo Finance com o
+# dólar e com o real, então o valor atual sempre pode ser convertido.
+CURRENCIES = {
+    "BRL": "Real brasileiro",
+    "USD": "Dólar americano",
+    "EUR": "Euro",
+    "GBP": "Libra esterlina",
+    "JPY": "Iene japonês",
+    "CHF": "Franco suíço",
+    "CAD": "Dólar canadense",
+    "AUD": "Dólar australiano",
+    "CNY": "Yuan chinês",
+    "HKD": "Dólar de Hong Kong",
+    "MXN": "Peso mexicano",
+    "ARS": "Peso argentino",
+    "CLP": "Peso chileno",
+    "COP": "Peso colombiano",
+}
+
+CurrencyCode = Literal[
+    "BRL", "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "CNY", "HKD", "MXN", "ARS", "CLP", "COP"
+]
+
+CURRENCY_LABELS = {code: f"{code} · {name}" for code, name in CURRENCIES.items()}
+
+
+def _upper_code(value: Optional[str]) -> Optional[str]:
+    # Antes da validação: o modelo às vezes escreve 'brl'.
+    return value.strip().upper() if isinstance(value, str) and value.strip() else None
 
 TargetPrice = Annotated[
     float,
@@ -69,7 +103,7 @@ class TradeInput(_TickerArgs):
     quantity: Quantity
     unit_price: UnitPrice
     traded_on: TradeDate
-    currency: Optional[str] = Field(
+    currency: Optional[CurrencyCode] = Field(
         default=None,
         title="Moeda do preço",
         description=(
@@ -77,14 +111,13 @@ class TradeInput(_TickerArgs):
             "Sem ela, vale a moeda em que o ativo é cotado. Use quando ele pagou numa "
             "moeda diferente, como Bitcoin (BTC-USD) comprado em reais."
         ),
-        min_length=3,
-        max_length=3,
+        json_schema_extra={"x-labels": CURRENCY_LABELS, "x-empty-label": "Moeda da cotação do ativo"},
     )
 
-    @field_validator("currency")
+    @field_validator("currency", mode="before")
     @classmethod
     def _currency_code(cls, value: Optional[str]) -> Optional[str]:
-        return value.strip().upper() if value else None
+        return _upper_code(value)
 
     @field_validator("traded_on")
     @classmethod
@@ -100,12 +133,10 @@ class PortfolioViewInput(BaseModel):
     ticker_name: Optional[TickerSymbol] = Field(
         default=None, description="Mostra só este ativo. Sem ele, a carteira inteira."
     )
-    currency: Optional[str] = Field(
+    currency: Optional[CurrencyCode] = Field(
         default=None,
         title="Moeda",
-        description="Mostra só os ativos cotados nesta moeda, como 'BRL' ou 'USD'.",
-        min_length=3,
-        max_length=3,
+        description="Mostra só os ativos com preço nesta moeda, como 'BRL' ou 'USD'.",
     )
     include_trades: bool = Field(
         default=False,
@@ -113,10 +144,10 @@ class PortfolioViewInput(BaseModel):
         description="Inclui a lista de compras e vendas, com datas e preços, além das posições.",
     )
 
-    @field_validator("ticker_name", "currency")
+    @field_validator("ticker_name", "currency", mode="before")
     @classmethod
     def _upper(cls, value: Optional[str]) -> Optional[str]:
-        return value.strip().upper() if value else value
+        return _upper_code(value)
 
 
 class WatchInput(_TickerArgs):
