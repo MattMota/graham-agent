@@ -96,6 +96,10 @@ class TurnRecorder:
                 "name": message.name,
                 "input": call.get("args"),
             }
+            # Guardado para a interface redesenhar o gráfico ao reabrir a conversa;
+            # o histórico entregue ao modelo usa só o conteúdo.
+            if getattr(message, "artifact", None) is not None:
+                payload["artifact"] = message.artifact
             if cancelled:
                 payload["cancelled"] = True
             self.last = await conversations.add_message(

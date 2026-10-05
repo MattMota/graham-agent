@@ -28,6 +28,8 @@ A resposta chega **token a token**, com os dados aparecendo conforme são buscad
 | `registrar_venda` ✋ | `ticker_name`, `quantity`, `unit_price`, `traded_on`, `currency?` | A operação gravada e a posição nova; recusa vender mais do que havia na data |
 | `adicionar_watchlist` ✋ | `ticker_name`, `operation`, `target_price`, `quantity?` | A entrada criada |
 | `remover_watchlist` ✋ | `ticker_name`, `operation`, `target_price?` | A entrada removida |
+| `proventos` | `ticker_name?`, `months` | Pagamentos pela data ex, total em 12 meses, dividend yield e próxima data ex; sem ticker, quanto a carteira recebeu |
+| `desempenho` | `tickers`, `period` ou `start_date`, `compare_index` | Retorno com e sem proventos, anualizado, volatilidade, maior queda, máxima e mínima, contra o Ibovespa ou o S&P 500 |
 
 ✋ Pede a confirmação do usuário antes de rodar (veja [Confirmação das operações](#confirmação-das-operações)).
 
@@ -161,10 +163,12 @@ src/
 │   │   ├── context.py       O que as ferramentas recebem do servidor: usuário e pool
 │   │   └── state_graph.py   O grafo, o nó de aprovação e a função que o compila
 │   └── tools/
+│       ├── analysis.py      Proventos (de um ativo ou da carteira) e desempenho
 │       ├── definition.py    As ferramentas de mercado e o registro automático
 │       ├── portfolio.py     As ferramentas de carteira e watchlist
 │       ├── registry.py      Junta as ferramentas e as que pedem confirmação
 │       └── schemas/
+│           ├── analysis.py  Schemas de entrada de proventos e desempenho
 │           ├── input.py     Schemas de entrada (validam o que o modelo envia)
 │           ├── portfolio.py Schemas de entrada da carteira e da watchlist
 │           └── output.py    Schemas de saída (normalizam o que a Yahoo devolve)
@@ -251,10 +255,16 @@ Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da con
 | O quê | Chave | TTL | Observações |
 |---|---|---|---|
 | Notícias | `graham:market:noticias_acao:*` | 1h | Resultado vazio não entra no cache: pode ser a fonte fora do ar |
+| Proventos de um ativo | `graham:market:proventos:*` | 24h | |
+| Histórico de preços | `graham:market:historico:*` | 1h | |
 | Busca de ticker e triagem por setor | `graham:market:buscar_*:*` | 24h | Mudam raramente |
 | Cotação | | | **Sem cache:** muda a todo momento, e um preço velho é pior do que nenhum |
 
 **Notícias pela busca da Yahoo.** Desde 2026, o feed de notícias por ticker da Yahoo responde 404, e o yfinance (até a 1.7.0) devolve a falha como uma lista vazia, igual a "não há notícias". O feed continua sendo a primeira tentativa; vazio, a ferramenta busca pelo nome da empresa, em algumas variações (`Petróleo Brasileiro S.A. - Petrobras` não encontra nada, `Petrobras` encontra), e fica só com as notícias marcadas com alguma listagem da empresa (a Petrobras aparece como `PBR` e `PBR-A`). Essas notícias não trazem resumo, e o resultado avisa o modelo para não ir além do título.
+
+**Proventos da carteira.** Sem ticker, `proventos` cruza o livro de operações com as datas ex da Yahoo: em cada pagamento, conta a quantidade que o usuário tinha no fim do pregão anterior, então uma compra feita na própria data ex não entra. Os valores são brutos, por ação ou cota.
+
+**O gráfico não passa pelo modelo.** `desempenho` usa o `response_format="content_and_artifact"` do LangChain: o modelo recebe só as métricas (cerca de 1.700 caracteres para três ativos), e a série de pontos vai no artefato da `ToolMessage`. O servidor manda o artefato à interface no evento `tool_end` e o guarda no `payload` da mensagem da ferramenta, para o gráfico voltar ao reabrir a conversa; o histórico entregue ao modelo continua sem ele.
 
 As conversas ficam fora do cache de propósito. Ler o caminho de uma thread no Postgres custa cerca de 1 ms, nada perto dos segundos de um turno, quase todos à espera do modelo. Uma cópia no Redis ocuparia memória proporcional às conversas ativas e traria o risco de mostrar uma versão desatualizada, em troca de um ganho que não aparece. O cache que faz diferença para a conversa é o do provedor do modelo, que reaproveita o começo do prompt entre chamadas; como o histórico só cresce no fim, ele já se beneficia disso.
 

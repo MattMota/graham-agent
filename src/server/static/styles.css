@@ -388,6 +388,123 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .tool-view .is-down { color: var(--down); }
 .tool-view-empty { margin: 4px 0 8px; color: var(--gray); }
 
+/* Destaques acima das tabelas: rótulo pequeno, valor em evidência. */
+.tool-view-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin: 2px 0 0;
+}
+
+.tool-view-stats dt {
+  font-size: 0.72rem;
+  color: var(--gray);
+}
+
+.tool-view-stats dd {
+  margin: 2px 0 0;
+  font-size: 1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+/* Gráfico de desempenho. Cores da paleta categórica validada contra o fundo
+   do cartão (#fbf9f5), em ordem fixa; o índice de referência é cinza e
+   tracejado. Três cores ficam abaixo de 3:1 de contraste, compensadas pelo
+   rótulo direto no fim de cada linha e pela tabela logo abaixo. */
+.perf-chart {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-index: #8a857b;
+  margin: 0;
+}
+
+.perf-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 2px 0 8px;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.perf-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+
+.perf-swatch {
+  flex: none;
+  width: 14px;
+  height: 0;
+  border-top: 2px solid var(--swatch);
+}
+
+.perf-swatch.is-index { border-top-style: dashed; }
+
+.perf-plot { position: relative; min-height: 200px; }
+.perf-plot svg { display: block; overflow: visible; }
+
+.perf-grid { stroke: var(--rule); stroke-width: 1; }
+.perf-zero { stroke: var(--rule-firm); stroke-width: 1; }
+
+.perf-axis {
+  font-size: 11px;
+  fill: var(--gray);
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.perf-line.is-index { stroke-dasharray: 5 4; }
+
+/* Anel da cor do fundo: o marcador se destaca da linha por baixo dele. */
+.perf-dot { stroke: var(--card); stroke-width: 2; }
+
+.perf-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  fill: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-crosshair { stroke: var(--rule-firm); stroke-width: 1; }
+.perf-zone { fill: transparent; cursor: crosshair; }
+
+.perf-tooltip {
+  position: absolute;
+  z-index: 2;
+  min-width: 150px;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--rule-firm);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-lift);
+  font-size: 0.78rem;
+  pointer-events: none;
+}
+
+.perf-tooltip-date { margin-bottom: 4px; color: var(--gray); }
+
+.perf-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-soft);
+}
+
+.perf-tooltip-row strong {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
 .code-box {
   background: #262a32;
   border-radius: var(--r-md);

@@ -174,6 +174,8 @@ function renderMarkdown(source) {
 
 const TOOL_NAMES = {
   cotacao_atual_acao: "cotação atual",
+  proventos: "proventos",
+  desempenho: "desempenho",
   noticias_acao: "notícias recentes",
   buscar_ticker_por_empresa: "busca de ticker",
   buscar_tickers_por_industria: "triagem por setor",
@@ -188,7 +190,9 @@ function toolLabel(name) {
 
 function toolSubject(payload) {
   if (!payload || typeof payload !== "object") return "";
-  const value = payload.ticker_name || payload.company_name || payload.industry || payload.region;
+  const value = payload.ticker_name
+    || (Array.isArray(payload.tickers) && payload.tickers.join(", "))
+    || payload.company_name || payload.industry || payload.region;
   return value ? ` · ${value}` : "";
 }
 
@@ -199,20 +203,25 @@ function toolSubject(payload) {
 
 const MONEY_FORMATS = new Map();
 
-function money(value, currency) {
+// `digits` é o máximo de casas decimais: proventos por ação pedem 4
+// (R$ 0,1053), valores totais ficam nas 2 de sempre.
+function money(value, currency, digits = 2) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-  if (!MONEY_FORMATS.has(currency)) {
+  const key = `${currency}:${digits}`;
+  if (!MONEY_FORMATS.has(key)) {
     let format;
     try {
-      format = new Intl.NumberFormat("pt-BR", { style: "currency", currency });
+      format = new Intl.NumberFormat("pt-BR", {
+        style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: digits,
+      });
     } catch {
       // Moeda que o navegador não conhece: o número, com o código ao lado.
-      const plain = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const plain = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: digits });
       format = { format: (number) => `${plain.format(number)} ${currency || ""}`.trim() };
     }
-    MONEY_FORMATS.set(currency, format);
+    MONEY_FORMATS.set(key, format);
   }
-  return MONEY_FORMATS.get(currency).format(value);
+  return MONEY_FORMATS.get(key).format(value);
 }
 
 const QUANTITY_FORMAT = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 8 });
@@ -361,8 +370,374 @@ function portfolioView(output) {
   return view;
 }
 
+function signedPercent(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  const sign = value < 0 ? MINUS : value > 0 ? "+" : "";
+  return `${sign}${PERCENT_FORMAT.format(Math.abs(value))}%`;
+}
+
+function percentCell(value) {
+  return {
+    text: signedPercent(value),
+    numeric: true,
+    className: typeof value !== "number" ? "" : value < 0 ? "is-down" : value > 0 ? "is-up" : "",
+  };
+}
+
+// Linha de destaques acima das tabelas: rótulo pequeno, valor em evidência.
+function statsRow(items) {
+  const row = document.createElement("dl");
+  row.className = "tool-view-stats";
+  for (const [label, value] of items) {
+    const item = document.createElement("div");
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const detail = document.createElement("dd");
+    detail.textContent = value;
+    item.append(term, detail);
+    row.append(item);
+  }
+  return row;
+}
+
+function emptyNote(text) {
+  const empty = document.createElement("p");
+  empty.className = "tool-view-empty";
+  empty.textContent = text;
+  return empty;
+}
+
+/* Proventos: de um ativo ou da carteira inteira. */
+function incomeView(output) {
+  if (!output || (!Array.isArray(output.payments) && !Array.isArray(output.assets))) return null;
+  const view = document.createElement("div");
+  view.className = "tool-view";
+
+  if (Array.isArray(output.assets)) {
+    if (!output.assets.length) {
+      view.append(emptyNote(`A carteira não recebeu proventos nos últimos ${output.months} meses.`));
+    } else {
+      view.append(statsRow(output.totals.map((total) => [
+        `Recebido em ${output.months} meses (${total.currency})`, money(total.total, total.currency),
+      ])));
+      view.append(dataTable(
+        "Por ativo",
+        [{ label: "Ativo" }, { label: "Pagamentos", numeric: true }, { label: "Recebido", numeric: true }],
+        output.assets.map((asset) => [
+          asset.ticker_name, String(asset.payments.length), money(asset.total, asset.currency),
+        ]),
+      ));
+      const payments = output.assets
+        .flatMap((asset) => asset.payments.map((payment) => ({ ...payment, asset })))
+        .sort((a, b) => b.ex_date.localeCompare(a.ex_date));
+      view.append(dataTable(
+        "Pagamentos",
+        [
+          { label: "Data ex" }, { label: "Ativo" }, { label: "Por cota", numeric: true },
+          { label: "Quantidade", numeric: true }, { label: "Recebido", numeric: true },
+        ],
+        payments.map((payment) => [
+          isoDate(payment.ex_date), payment.asset.ticker_name,
+          money(payment.amount, payment.asset.currency, 4), quantity(payment.quantity),
+          money(payment.received, payment.asset.currency),
+        ]),
+      ));
+    }
+    if ((output.upcoming || []).length) {
+      view.append(dataTable(
+        "Próximas datas ex",
+        [{ label: "Data ex" }, { label: "Ativo" }, { label: "Quantidade", numeric: true }],
+        output.upcoming.map((item) => [isoDate(item.next_ex_date), item.ticker_name, quantity(item.quantity)]),
+      ));
+    }
+    return view;
+  }
+
+  const currency = output.currency;
+  view.append(statsRow([
+    ["Últimos 12 meses", money(output.trailing_12m_total, currency)],
+    ["Dividend yield (12 meses)", output.dividend_yield_12m == null
+      ? "—" : `${PERCENT_FORMAT.format(output.dividend_yield_12m)}%`],
+    ["Próxima data ex", output.next_ex_date ? isoDate(output.next_ex_date) : "—"],
+  ]));
+  if (!output.payments.length) {
+    view.append(emptyNote(`Nenhum provento nos últimos ${output.months} meses.`));
+  } else {
+    view.append(dataTable(
+      `Pagamentos em ${output.months} meses`,
+      [{ label: "Data ex" }, { label: "Por ação ou cota", numeric: true }],
+      output.payments.map((payment) => [isoDate(payment.ex_date), money(payment.amount, currency, 4)]),
+    ));
+  }
+  if (output.your_income) {
+    view.append(dataTable(
+      `Recebido por você: ${money(output.your_income.total, currency)}`,
+      [
+        { label: "Data ex" }, { label: "Por cota", numeric: true },
+        { label: "Quantidade", numeric: true }, { label: "Recebido", numeric: true },
+      ],
+      output.your_income.payments.map((payment) => [
+        isoDate(payment.ex_date), money(payment.amount, currency, 4),
+        quantity(payment.quantity), money(payment.received, currency),
+      ]),
+    ));
+  }
+  return view;
+}
+
+/* ─────────────────────────────── Gráfico de desempenho ──────────────────── */
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const MONTHS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+function svgElement(tag, attributes = {}) {
+  const element = document.createElementNS(SVG_NS, tag);
+  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
+  return element;
+}
+
+// Passo "redondo" para os rótulos do eixo: 1, 2, 2,5 ou 5 vezes uma potência de 10.
+function niceStep(rough) {
+  const power = 10 ** Math.floor(Math.log10(rough));
+  return [1, 2, 2.5, 5, 10].map((factor) => factor * power).find((step) => step >= rough);
+}
+
+function shortDate(time, longSpan) {
+  const date = new Date(time);
+  const month = MONTHS[date.getUTCMonth()];
+  return longSpan
+    ? `${month}/${String(date.getUTCFullYear()).slice(2)}`
+    : `${String(date.getUTCDate()).padStart(2, "0")} ${month}`;
+}
+
+// Último ponto da série até `time`: as séries têm calendários diferentes (cripto
+// negocia no fim de semana; a bolsa, não).
+function pointAt(points, time) {
+  let low = 0;
+  let high = points.length - 1;
+  if (time <= points[0][0]) return points[0];
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (points[middle][0] <= time) low = middle;
+    else high = middle - 1;
+  }
+  return points[low];
+}
+
+// Retorno acumulado de cada ativo, todos partindo de zero na mesma escala.
+// As cores seguem a ordem fixa da paleta pela posição do ativo; o índice de
+// referência fica em cinza tracejado, recessivo.
+function performanceChart(seriesList) {
+  const series = seriesList.map((item, index) => ({
+    ...item,
+    color: item.is_index ? "var(--series-index)" : `var(--series-${index + 1})`,
+    points: item.points.map(([day, value]) => [Date.parse(`${day}T00:00:00Z`), value]),
+  }));
+
+  const root = document.createElement("figure");
+  root.className = "perf-chart";
+
+  const caption = document.createElement("figcaption");
+  caption.className = "tool-view-caption";
+  caption.textContent = "Retorno acumulado, com proventos";
+  root.append(caption);
+
+  if (series.length > 1) {
+    const legend = document.createElement("div");
+    legend.className = "perf-legend";
+    for (const item of series) {
+      const entry = document.createElement("span");
+      entry.className = "perf-legend-item";
+      const swatch = document.createElement("span");
+      swatch.className = `perf-swatch${item.is_index ? " is-index" : ""}`;
+      swatch.style.setProperty("--swatch", item.color);
+      entry.append(swatch, document.createTextNode(item.label));
+      legend.append(entry);
+    }
+    root.append(legend);
+  }
+
+  const plot = document.createElement("div");
+  plot.className = "perf-plot";
+  const tooltip = document.createElement("div");
+  tooltip.className = "perf-tooltip";
+  tooltip.hidden = true;
+  root.append(plot);
+
+  const summary = series
+    .map((item) => `${item.label} ${signedPercent(item.points[item.points.length - 1][1])}`)
+    .join(", ");
+
+  const draw = () => {
+    const width = plot.clientWidth;
+    if (!width) return; // ainda escondido: o detalhe da consulta está fechado
+    const narrow = width < 480;
+    const height = narrow ? 200 : 240;
+    const margin = { top: 10, right: narrow ? 92 : 128, bottom: 24, left: 44 };
+    const innerWidth = width - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
+
+    const times = series.flatMap((item) => item.points.map(([time]) => time));
+    const values = series.flatMap((item) => item.points.map(([, value]) => value));
+    const t0 = Math.min(...times);
+    const t1 = Math.max(...times);
+    const step = niceStep(Math.max((Math.max(...values, 0) - Math.min(...values, 0)) / 4, 0.5));
+    const y0 = Math.floor(Math.min(...values, 0) / step) * step;
+    const y1 = Math.ceil(Math.max(...values, 0) / step) * step;
+
+    const x = (time) => margin.left + ((time - t0) / (t1 - t0 || 1)) * innerWidth;
+    const y = (value) => margin.top + (1 - (value - y0) / (y1 - y0 || 1)) * innerHeight;
+
+    const chart = svgElement("svg", {
+      width, height, viewBox: `0 0 ${width} ${height}`, role: "img",
+      "aria-label": `Retorno acumulado no período: ${summary}.`,
+    });
+
+    // Grade e eixo vertical, recessivos; a linha do zero, um pouco mais firme.
+    for (let value = y0; value <= y1 + step / 2; value += step) {
+      chart.append(svgElement("line", {
+        x1: margin.left, x2: margin.left + innerWidth, y1: y(value), y2: y(value),
+        class: Math.abs(value) < step / 2 ? "perf-zero" : "perf-grid",
+      }));
+      const label = svgElement("text", { x: margin.left - 8, y: y(value), class: "perf-axis", "text-anchor": "end", dy: "0.32em" });
+      label.textContent = signedPercent(Math.round(value * 100) / 100).replace(",00", "");
+      chart.append(label);
+    }
+
+    const longSpan = t1 - t0 > 400 * 864e5;
+    const ticks = narrow ? 3 : 5;
+    for (let index = 0; index < ticks; index++) {
+      const time = t0 + ((t1 - t0) * index) / (ticks - 1);
+      const label = svgElement("text", {
+        x: x(time), y: height - 6, class: "perf-axis",
+        "text-anchor": index === 0 ? "start" : index === ticks - 1 ? "end" : "middle",
+      });
+      label.textContent = shortDate(time, longSpan);
+      chart.append(label);
+    }
+
+    // O índice vai por baixo; os ativos, por cima.
+    for (const item of [...series].sort((a, b) => Number(b.is_index) - Number(a.is_index))) {
+      chart.append(svgElement("path", {
+        d: item.points.map(([time, value], index) => `${index ? "L" : "M"}${x(time).toFixed(1)},${y(value).toFixed(1)}`).join(""),
+        class: `perf-line${item.is_index ? " is-index" : ""}`,
+        style: `stroke: ${item.color}`,
+      }));
+    }
+
+    // Rótulo direto no fim de cada linha, afastados para não se sobreporem.
+    const ends = series
+      .map((item) => ({ item, last: item.points[item.points.length - 1] }))
+      .map((end) => ({ ...end, labelY: y(end.last[1]) }))
+      .sort((a, b) => a.labelY - b.labelY);
+    for (let index = 1; index < ends.length; index++) {
+      ends[index].labelY = Math.max(ends[index].labelY, ends[index - 1].labelY + 14);
+    }
+    const overflow = ends.length ? ends[ends.length - 1].labelY - (height - margin.bottom) : 0;
+    if (overflow > 0) ends.forEach((end) => { end.labelY -= overflow; });
+    for (const { item, last, labelY } of ends) {
+      chart.append(svgElement("circle", {
+        cx: x(last[0]), cy: y(last[1]), r: 4, class: "perf-dot", style: `fill: ${item.color}`,
+      }));
+      const label = svgElement("text", { x: margin.left + innerWidth + 10, y: labelY, dy: "0.32em", class: "perf-label" });
+      label.textContent = `${narrow ? "" : `${item.label} `}${signedPercent(last[1])}`;
+      chart.append(label);
+    }
+
+    // Camada de hover: linha vertical e os valores de cada ativo naquela data.
+    const crosshair = svgElement("line", { y1: margin.top, y2: margin.top + innerHeight, class: "perf-crosshair" });
+    const markers = series.map((item) => svgElement("circle", { r: 4, class: "perf-dot", style: `fill: ${item.color}` }));
+    const hover = svgElement("g", { visibility: "hidden" });
+    hover.append(crosshair, ...markers);
+    chart.append(hover);
+
+    const zone = svgElement("rect", {
+      x: margin.left, y: margin.top, width: innerWidth, height: innerHeight, class: "perf-zone",
+    });
+    zone.addEventListener("pointermove", (event) => {
+      const bounds = chart.getBoundingClientRect();
+      const time = t0 + ((event.clientX - bounds.left - margin.left) / innerWidth) * (t1 - t0);
+      const anchor = pointAt(series[0].points, time)[0];
+      crosshair.setAttribute("x1", x(anchor));
+      crosshair.setAttribute("x2", x(anchor));
+
+      tooltip.replaceChildren();
+      const heading = document.createElement("div");
+      heading.className = "perf-tooltip-date";
+      heading.textContent = isoDate(new Date(anchor).toISOString());
+      tooltip.append(heading);
+      series.forEach((item, index) => {
+        const [time, value] = pointAt(item.points, anchor);
+        markers[index].setAttribute("cx", x(time));
+        markers[index].setAttribute("cy", y(value));
+        const row = document.createElement("div");
+        row.className = "perf-tooltip-row";
+        const swatch = document.createElement("span");
+        swatch.className = `perf-swatch${item.is_index ? " is-index" : ""}`;
+        swatch.style.setProperty("--swatch", item.color);
+        const name = document.createElement("span");
+        name.textContent = item.label;
+        const amount = document.createElement("strong");
+        amount.textContent = signedPercent(value);
+        row.append(swatch, name, amount);
+        tooltip.append(row);
+      });
+
+      hover.setAttribute("visibility", "visible");
+      tooltip.hidden = false;
+      const left = x(anchor) + 12;
+      tooltip.style.left = `${left + tooltip.offsetWidth > width ? x(anchor) - tooltip.offsetWidth - 12 : left}px`;
+      tooltip.style.top = `${margin.top}px`;
+    });
+    zone.addEventListener("pointerleave", () => {
+      hover.setAttribute("visibility", "hidden");
+      tooltip.hidden = true;
+    });
+    chart.append(zone);
+
+    plot.replaceChildren(chart, tooltip);
+  };
+
+  // Desenha quando o quadro ganha largura (o detalhe abre) e a cada mudança dela.
+  new ResizeObserver(draw).observe(plot);
+  return root;
+}
+
+function performanceView(output, artifact) {
+  if (!output || !Array.isArray(output.series)) return null;
+  const view = document.createElement("div");
+  view.className = "tool-view";
+
+  if (artifact?.series?.length) view.append(performanceChart(artifact.series));
+
+  // A tabela é também a leitura acessível do gráfico. Com o mesmo período para
+  // todos (o comum), ele vai uma vez só no título, e não em cada linha.
+  const span = (item) => `${isoDate(item.from)} a ${isoDate(item.to)}`;
+  const shared = new Set(output.series.map(span)).size === 1;
+  view.append(dataTable(
+    shared ? `Desempenho de ${span(output.series[0])}` : "Desempenho",
+    [
+      { label: "Ativo" }, ...(shared ? [] : [{ label: "Período" }]), { label: "Preço", numeric: true },
+      { label: "Com proventos", numeric: true }, { label: "Ao ano", numeric: true },
+      { label: "Volatilidade", numeric: true }, { label: "Maior queda", numeric: true },
+    ],
+    output.series.map((item) => [
+      item.label,
+      ...(shared ? [] : [span(item)]),
+      percentCell(item.price_return_percent),
+      percentCell(item.total_return_percent),
+      percentCell(item.annualized_return_percent),
+      item.annualized_volatility_percent == null ? "—" : `${PERCENT_FORMAT.format(item.annualized_volatility_percent)}%`,
+      percentCell(item.max_drawdown_percent),
+    ]),
+  ));
+  return view;
+}
+
 const TOOL_VIEWS = {
   ver_carteira: portfolioView,
+  proventos: incomeView,
+  desempenho: performanceView,
 };
 
 /* ───────────────────────── Detalhe da chamada de ferramenta ─────────────── */
@@ -440,13 +815,13 @@ function toolBlock(toolName, input) {
 
   return {
     root,
-    finish(output) {
+    finish(output, artifact = null) {
       bar.classList.remove("is-working");
       dot.remove();
       // "consulta concluída" evita concordar em gênero com o nome da ferramenta.
       text.textContent = `${toolLabel(toolName)} · consulta concluída`;
       result.set(output);
-      const view = TOOL_VIEWS[toolName]?.(output);
+      const view = TOOL_VIEWS[toolName]?.(output, artifact);
       if (view) detail.prepend(view);
     },
     abort() {
@@ -1145,7 +1520,7 @@ function renderStoredTurn(turn) {
     } else {
       const note = toolBlock(block.name, block.input);
       body.append(note.root);
-      if (block.done) note.finish(block.output);
+      if (block.done) note.finish(block.output, block.artifact);
       else note.abort();
     }
   }
@@ -1267,7 +1642,7 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
       scrollToEnd();
 
     } else if (name === "tool_end") {
-      pendingNotes.get(data.name)?.shift()?.finish(data.output);
+      pendingNotes.get(data.name)?.shift()?.finish(data.output, data.artifact);
 
     } else if (name === "approval") {
       closeBlock();

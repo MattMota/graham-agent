@@ -445,9 +445,15 @@ async def _run_turn(
                         quotes[payload["ticker_name"]] = payload
                 candidates.extend(_symbols_in(payload))
 
+                # O artefato (a série do gráfico do desempenho) vai só para a
+                # interface; o modelo recebeu apenas o conteúdo.
                 yield _sse(
                     "tool_end",
-                    {"name": event["name"], "output": _tool_preview(payload)},
+                    {
+                        "name": event["name"],
+                        "output": _tool_preview(payload),
+                        "artifact": getattr(event["data"].get("output"), "artifact", None),
+                    },
                 )
 
             # O fim de cada nó traz as mensagens que ele acrescentou ao estado.
@@ -580,7 +586,9 @@ def _display_turn(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 })
         elif payload.get("tool_call_id") in tools:
             tools[payload["tool_call_id"]].update(
-                output=_tool_preview(_tool_payload(row["content"])), done=True
+                output=_tool_preview(_tool_payload(row["content"])),
+                artifact=payload.get("artifact"),
+                done=True,
             )
         elif payload.get("name") in APPROVAL_REQUIRED:
             failed = row["state"] == "failed" and not payload.get("cancelled")
