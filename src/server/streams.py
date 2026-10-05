@@ -123,9 +123,14 @@ async def produce(
     try:
         async for item in frames:
             event = item.split("\n", 1)[0].removeprefix("event: ")
+            if event == "done":
+                # A conversa é liberada antes de o fim ser anunciado: quem lê o
+                # `done` e manda a próxima pergunta na hora não pode encontrá-la
+                # ainda reservada. Nada do turno é gravado depois do `done`.
+                await release(redis, thread_id, stream_id)
+                finished = True
             await redis.xadd(key_, {"event": event, "frame": item})
             await redis.expire(key_, STREAM_TTL)
-            finished = finished or event == "done"
     finally:
         # Cancelado (o servidor está parando) ou não, o stream precisa terminar
         # e a conversa precisa ser liberada; o escudo deixa estas escritas
@@ -134,8 +139,8 @@ async def produce(
             await frames.aclose()
             try:
                 if not finished:
+                    await release(redis, thread_id, stream_id)
                     await redis.xadd(key_, {"event": "done", "frame": INTERRUPTED})
-                await release(redis, thread_id, stream_id)
             except Exception:  # noqa: BLE001 - o Redis caiu junto; a subida seguinte limpa
                 logger.exception("Não foi possível fechar o stream %s", stream_id)
 
