@@ -29,7 +29,7 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Feature | Estado | Onde | Observações |
 |---|---|---|---|
 | Cotação atual de uma ação | ✅ Existente | `cotacao_atual_acao` | Preço, variação, volume, valor de mercado, faixa de 52 semanas e médias móveis |
-| Notícias de uma ação | ✅ Existente | `noticias_acao` | Abas de notícias, comunicados ou ambas |
+| Notícias de uma ação | ✅ Existente | `noticias_acao` | O feed por ticker da Yahoo está fora do ar; as notícias vêm da busca pelo nome da empresa, sem resumo |
 | Busca de ticker pelo nome da empresa | ✅ Existente | `buscar_ticker_por_empresa` | |
 | Busca de empresas por indústria | ✅ Existente | `buscar_tickers_por_industria` | 145 subsetores da classificação Yahoo, com correção aproximada do nome |
 

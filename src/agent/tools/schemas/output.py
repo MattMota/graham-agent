@@ -145,6 +145,9 @@ class TickerNews(BaseModel):
     articles: list[NewsArticle] = Field(
         default_factory=list, description="Notícias encontradas, da mais recente à mais antiga."
     )
+    note: Optional[str] = Field(
+        default=None, description="Como as notícias foram encontradas, quando isso muda a leitura."
+    )
 
 
 class CompanyMatch(BaseModel):

@@ -250,9 +250,11 @@ Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da con
 
 | O quê | Chave | TTL | Observações |
 |---|---|---|---|
-| Notícias | `graham:market:noticias_acao:*` | 1h | |
+| Notícias | `graham:market:noticias_acao:*` | 1h | Resultado vazio não entra no cache: pode ser a fonte fora do ar |
 | Busca de ticker e triagem por setor | `graham:market:buscar_*:*` | 24h | Mudam raramente |
 | Cotação | | | **Sem cache:** muda a todo momento, e um preço velho é pior do que nenhum |
+
+**Notícias pela busca da Yahoo.** Desde 2026, o feed de notícias por ticker da Yahoo responde 404, e o yfinance (até a 1.7.0) devolve a falha como uma lista vazia, igual a "não há notícias". O feed continua sendo a primeira tentativa; vazio, a ferramenta busca pelo nome da empresa, em algumas variações (`Petróleo Brasileiro S.A. - Petrobras` não encontra nada, `Petrobras` encontra), e fica só com as notícias marcadas com alguma listagem da empresa (a Petrobras aparece como `PBR` e `PBR-A`). Essas notícias não trazem resumo, e o resultado avisa o modelo para não ir além do título.
 
 As conversas ficam fora do cache de propósito. Ler o caminho de uma thread no Postgres custa cerca de 1 ms, nada perto dos segundos de um turno, quase todos à espera do modelo. Uma cópia no Redis ocuparia memória proporcional às conversas ativas e traria o risco de mostrar uma versão desatualizada, em troca de um ganho que não aparece. O cache que faz diferença para a conversa é o do provedor do modelo, que reaproveita o começo do prompt entre chamadas; como o histórico só cresce no fim, ele já se beneficia disso.
 

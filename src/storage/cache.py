@@ -71,10 +71,14 @@ def _sync() -> redis.Redis | None:
     return _sync_client
 
 
-def cached(name: str, ttl: int) -> Callable[[Callable[..., dict]], Callable[..., dict]]:
+def cached(
+    name: str, ttl: int, keep: Callable[[dict], bool] = lambda result: True
+) -> Callable[[Callable[..., dict]], Callable[..., dict]]:
     """Guarda o retorno da função por `ttl` segundos, pela combinação de argumentos.
 
-    Só o que deu certo entra no cache: uma exceção sobe sem ser guardada.
+    Só o que deu certo entra no cache: uma exceção sobe sem ser guardada, e um
+    resultado que `keep` recusa também não. Um resultado vazio, por exemplo,
+    pode ser uma falha da fonte, e guardá-lo prolongaria a falha por todo o TTL.
     """
 
     def decorator(function: Callable[..., dict]) -> Callable[..., dict]:
@@ -94,7 +98,7 @@ def cached(name: str, ttl: int) -> Callable[[Callable[..., dict]], Callable[...,
                     store = None
 
             result = function(*args, **kwargs)
-            if store is not None:
+            if store is not None and keep(result):
                 try:
                     store.set(entry, json.dumps(result, default=str), ex=ttl)
                 except redis.RedisError:

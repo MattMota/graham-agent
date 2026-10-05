@@ -1,5 +1,5 @@
 """Ferramentas do agente — wrappers sobre a API do yfinance."""
-import inspect, math, sys
+import inspect, math, re, sys
 from langchain_core.tools import BaseTool
 
 from datetime import datetime, timezone
@@ -138,6 +138,71 @@ def get_current_stock_price(ticker_name: str) -> dict[str, Any]:
     return quote.model_dump(mode="json")
 
 
+# Sufixos societários que atrapalham a busca pelo nome da empresa.
+_LEGAL_SUFFIXES = re.compile(
+    r"\b(S\.?A\.?|Inc\.?|Corp(oration)?\.?|Ltd\.?|Limited|PLC|N\.?V\.?|AG|SE|Holdings?|Co\.?)(?=\s|$|\W)",
+    re.IGNORECASE,
+)
+
+# Quantas variações do nome a busca tenta antes de desistir.
+MAX_NAME_QUERIES = 3
+
+SEARCH_NOTE = (
+    "Encontradas pela busca da Yahoo pelo nome da empresa: incluem notícias do mercado "
+    "em geral que citam a empresa. Não trazem resumo, então não descreva o conteúdo "
+    "além do que o título diz; ofereça o link para quem quiser os detalhes."
+)
+
+
+def _name_queries(metadata: dict[str, Any]) -> list[str]:
+    """Variações do nome da empresa para a busca, da mais provável à menos.
+
+    'Petróleo Brasileiro S.A. - Petrobras' não encontra nada; 'Petrobras', sim.
+    Por isso vêm primeiro a parte depois do hífen e o nome sem o sufixo
+    societário; numa criptomoeda, 'Bitcoin USD' vira 'Bitcoin'.
+    """
+    queries: list[str] = []
+    for name in (metadata.get("longName"), metadata.get("shortName")):
+        if not name:
+            continue
+        parts = [part.strip() for part in name.split(" - ")]
+        for candidate in (parts[-1], *parts, name):
+            candidate = _LEGAL_SUFFIXES.sub(" ", candidate)
+            candidate = re.sub(r"\s+(USD|BRL|EUR)$", "", candidate.strip())
+            candidate = " ".join(re.sub(r"[^\w\s&-]", " ", candidate).split()).strip(" -")
+            if candidate and candidate not in queries:
+                queries.append(candidate)
+    return queries
+
+
+def _search_news(ticker_name: str, count: int) -> list[NewsArticle]:
+    """Notícias pela busca da Yahoo, para quando o feed do ticker vem vazio.
+
+    A busca pelo ticker da B3 não encontra nada, mas a pelo nome da empresa,
+    sim. As notícias vêm marcadas com as listagens da empresa (Petrobras como
+    PBR e PBR-A, por exemplo); a própria busca devolve essas listagens, e só
+    fica a notícia marcada com alguma delas.
+    """
+    metadata = _safe(lambda: _ticker(ticker_name).get_history_metadata()) or {}
+    for query in _name_queries(metadata)[:MAX_NAME_QUERIES]:
+        search = yf.Search(query, news_count=count * 3, max_results=10)
+        listings = {quote.get("symbol") for quote in search.quotes} | {ticker_name}
+        related = [
+            item for item in search.news if listings & set(item.get("relatedTickers") or [])
+        ]
+        if related:
+            return [
+                NewsArticle(
+                    title=item.get("title"),
+                    published_at=_timestamp(item.get("providerPublishTime")),
+                    link=item.get("link"),
+                    publisher=item.get("publisher"),
+                )
+                for item in related[:count]
+            ]
+    return []
+
+
 @tool(
     "noticias_acao",
     description=(
@@ -147,13 +212,18 @@ def get_current_stock_price(ticker_name: str) -> dict[str, Any]:
     ),
     args_schema=TickerNewsInput,
 )
-@cached("noticias_acao", ttl=NEWS_TTL)
+# Sem notícias pode ser a fonte fora do ar: não fica no cache, e a próxima
+# pergunta tenta de novo.
+@cached("noticias_acao", ttl=NEWS_TTL, keep=lambda result: bool(result["articles"]))
 def get_ticker_news(
     ticker_name: str,
     count: int = 5,
     tab: Literal["news", "all", "press releases"] = "news",
 ) -> dict[str, Any]:
     articles = []
+    # Desde 2026 o feed por ticker da Yahoo responde 404, e o yfinance devolve
+    # a falha como uma lista vazia. Ele continua sendo a primeira tentativa,
+    # por respeitar a aba pedida; vazio, a busca pelo nome da empresa assume.
     for item in _ticker(ticker_name).get_news(count=count, tab=tab):
         # Cada item vem como {'id': ..., 'content': {...}}; os campos úteis
         # ficam dentro de 'content'.
@@ -173,7 +243,12 @@ def get_ticker_news(
             )
         )
 
-    news = TickerNews(ticker_name=ticker_name, articles=articles)
+    note = None
+    if not articles:
+        articles = _search_news(ticker_name, count)
+        note = SEARCH_NOTE if articles else None
+
+    news = TickerNews(ticker_name=ticker_name, articles=articles, note=note)
     return news.model_dump(mode="json")
 
 
