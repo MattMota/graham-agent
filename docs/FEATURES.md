@@ -15,6 +15,8 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 |---|---|---|---|
 | Perguntas em linguagem natural | ✅ Existente | `src/agent/runtime/state_graph.py` | Ciclo ReAct de dois nós (`agent` e `tools`) no LangGraph |
 | Resposta transmitida token a token | ✅ Existente | `src/server/app.py` | SSE a partir de `astream_events(version="v2")` |
+| Aba de conversas | ✅ Existente | `GET /api/threads`, `src/server/static/app.js` | Fixa à esquerda em telas largas, gaveta nas estreitas; indica as que estão respondendo ou aguardando confirmação. Trocar de conversa no meio de uma resposta não a interrompe |
+| Renomear, apagar e buscar conversas | ✅ Existente | `PATCH` e `DELETE /api/threads/{id}`, `GET /api/threads?q=` | Busca no título e nas mensagens, sem caixa nem acento, com o trecho destacado. Apagar esconde a conversa e tira os turnos dela da memória do agente; as mensagens ficam para as bifurcações |
 | Nova conversa | ✅ Existente | `POST /api/chat` | Criada pelo servidor na primeira pergunta; o navegador guarda o id no `localStorage` |
 | Conversas gravadas no banco | ✅ Existente | `src/storage/`, `db/migrations/` | Árvore de mensagens no schema `agent`; reabrir a página redesenha o caminho ativo |
 | Regerar resposta | ✅ Existente | `POST /api/regenerate` | A nova resposta é irmã da anterior, que continua gravada fora do caminho |

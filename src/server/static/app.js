@@ -12,6 +12,18 @@ const topbarMark = document.getElementById("topbar-mark");
 
 let streaming = false;
 
+// A leitura de stream em curso nesta tela, e um contador que muda a cada troca
+// de conversa: o que chegar de uma conversa que já saiu da tela é descartado.
+let currentReading = null;
+let currentView = 0;
+
+function leaveView() {
+  currentView++;
+  currentReading?.abort();
+  currentReading = null;
+  setStreaming(false);
+}
+
 /* ─────────────────────────────── Identidade da conversa ─────────────────── */
 
 // A conversa é criada pelo servidor na primeira pergunta; o navegador só
@@ -63,7 +75,9 @@ function setStreaming(value) {
 }
 
 function startNewConversation() {
-  if (streaming) return;
+  // Uma resposta em andamento segue no servidor; ela volta ao reabrir a conversa.
+  leaveView();
+  closeSidebar();
 
   threadId = null;
   storeThreadId(null);
@@ -73,6 +87,7 @@ function startNewConversation() {
   resize();
   input.focus();
   window.scrollTo({ top: 0, behavior: "smooth" });
+  markCurrentThread();
 }
 
 newChatButton.addEventListener("click", startNewConversation);
@@ -119,11 +134,14 @@ function showAuthError(message) {
 function signedIn(email) {
   document.body.dataset.auth = "in";
   signOutButton.title = `Sair de ${email}`;
+  refreshThreadList();
 }
 
 // Sem sessão (nunca entrou, saiu ou ela venceu): só a entrada fica na tela, e
 // a conversa aberta sai junto, porque era da conta anterior.
 function signedOut() {
+  leaveView();
+  clearThreadList();
   threadId = null;
   storeThreadId(null);
   showEmpty();
@@ -170,13 +188,334 @@ authForm.addEventListener("submit", async (event) => {
 });
 
 signOutButton.addEventListener("click", async () => {
-  if (streaming) return;
   try {
     await fetch("/api/auth/logout", { method: "POST" });
   } finally {
     setAuthMode("login");
     signedOut();
   }
+});
+
+/* ──────────────────────────────── Aba de conversas ──────────────────────── */
+
+const sidebarToggle = document.getElementById("sidebar-toggle");
+const sidebarBackdrop = document.getElementById("sidebar-backdrop");
+const threadList = document.getElementById("thread-list");
+const threadListEmpty = document.getElementById("thread-list-empty");
+const threadSearch = document.getElementById("thread-search");
+
+// Enquanto alguma conversa responde, a lista se atualiza sozinha para o
+// indicador apagar quando a resposta acabar, mesmo com a conversa fora da tela.
+const THREAD_LIST_POLL_MS = 4000;
+let threadListTimer = null;
+// Cada atualização ganha um número; uma resposta que chega depois de outra mais
+// nova (a busca digitada rápido) é descartada.
+let threadListRequest = 0;
+
+const SEARCH_DEBOUNCE_MS = 200;
+let searchTimer = null;
+
+const STATUS_LABELS = {
+  streaming: "respondendo",
+  awaiting_approval: "aguardando confirmação",
+};
+
+const RELATIVE_TIME = new Intl.RelativeTimeFormat("pt-BR", { numeric: "auto" });
+const SHORT_DATE = new Intl.DateTimeFormat("pt-BR", { day: "numeric", month: "short" });
+
+function relativeTime(iso) {
+  const seconds = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (seconds < 60) return "agora";
+  if (seconds < 3600) return RELATIVE_TIME.format(-Math.floor(seconds / 60), "minute");
+  if (seconds < 86400) return RELATIVE_TIME.format(-Math.floor(seconds / 3600), "hour");
+  if (seconds < 7 * 86400) return RELATIVE_TIME.format(-Math.floor(seconds / 86400), "day");
+  return SHORT_DATE.format(new Date(iso));
+}
+
+function threadItem(item) {
+  const li = document.createElement("li");
+  li.className = "thread-row";
+  li.dataset.id = item.id;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "thread-item";
+  button.dataset.id = item.id;
+
+  const title = document.createElement("span");
+  title.className = "thread-item-title";
+  title.textContent = item.title || "Conversa sem título";
+  button.title = title.textContent;
+  button.append(title);
+
+  // Na busca, o trecho da mensagem que contém o texto, com ele destacado.
+  if (item.snippet) {
+    const snippet = document.createElement("span");
+    snippet.className = "thread-item-snippet";
+    const mark = document.createElement("mark");
+    mark.textContent = item.snippet.match;
+    snippet.append(item.snippet.before, mark, item.snippet.after);
+    button.append(snippet);
+  }
+
+  const meta = document.createElement("span");
+  meta.className = "thread-item-meta";
+  meta.textContent = `${item.is_fork ? "bifurcação · " : ""}${relativeTime(item.updated_at)}`;
+  if (item.status) {
+    const status = document.createElement("span");
+    status.className = `thread-item-status is-${item.status.replace(/_/g, "-")}`;
+    status.textContent = STATUS_LABELS[item.status];
+    meta.append(status);
+  }
+  button.append(meta);
+  button.addEventListener("click", () => switchThread(item.id));
+
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "thread-more";
+  more.setAttribute("aria-label", "Opções da conversa");
+  more.setAttribute("aria-haspopup", "menu");
+  more.innerHTML =
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">' +
+    '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>';
+  more.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleThreadMenu(li, item);
+  });
+
+  li.append(button, more);
+  return li;
+}
+
+/* Menu de cada conversa: renomear e apagar. Enquanto ele ou a edição do título
+   estão abertos, a lista não é redesenhada por baixo. */
+
+function threadListBusy() {
+  return Boolean(threadList.querySelector(".thread-menu, .thread-rename"));
+}
+
+function closeThreadMenu() {
+  for (const menu of threadList.querySelectorAll(".thread-menu")) menu.remove();
+  for (const row of threadList.querySelectorAll(".thread-row.has-menu")) row.classList.remove("has-menu");
+}
+
+function menuButton(label, onClick, className = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `thread-menu-item ${className}`.trim();
+  button.setAttribute("role", "menuitem");
+  button.textContent = label;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  return button;
+}
+
+function toggleThreadMenu(row, item) {
+  const open = row.querySelector(".thread-menu");
+  closeThreadMenu();
+  if (open) return;
+
+  const menu = document.createElement("div");
+  menu.className = "thread-menu";
+  menu.setAttribute("role", "menu");
+  menu.addEventListener("click", (event) => event.stopPropagation());
+
+  const showActions = () => {
+    menu.replaceChildren(
+      menuButton("Renomear", () => startRename(row, item)),
+      menuButton("Apagar", showConfirm, "is-danger"),
+    );
+    menu.firstElementChild.focus();
+  };
+
+  const showConfirm = () => {
+    const question = document.createElement("p");
+    question.className = "thread-menu-note";
+    question.textContent = "Apagar esta conversa? Ela sai da lista e da memória do agente.";
+    const confirm = menuButton("Apagar", () => removeThread(item, menu), "is-danger is-strong");
+    menu.replaceChildren(question, confirm, menuButton("Cancelar", showActions));
+    confirm.focus();
+  };
+
+  row.classList.add("has-menu");
+  row.append(menu);
+  showActions();
+}
+
+async function removeThread(item, menu) {
+  let response = null;
+  try {
+    response = await fetch(`/api/threads/${item.id}`, { method: "DELETE" });
+  } catch {
+    /* sem servidor: cai no aviso abaixo */
+  }
+  if (!response?.ok) {
+    let detail = "Não foi possível apagar a conversa.";
+    try {
+      detail = (await response.json()).detail || detail;
+    } catch {
+      /* sem corpo legível */
+    }
+    const note = document.createElement("p");
+    note.className = "thread-menu-note is-error";
+    note.textContent = detail;
+    menu.replaceChildren(note, menuButton("Fechar", closeThreadMenu));
+    return;
+  }
+  closeThreadMenu();
+  if (item.id === threadId) startNewConversation();
+  refreshThreadList();
+}
+
+function startRename(row, item) {
+  closeThreadMenu();
+  const form = document.createElement("form");
+  form.className = "thread-rename";
+  const field = document.createElement("input");
+  field.type = "text";
+  field.maxLength = 80;
+  field.value = item.title || "";
+  field.setAttribute("aria-label", "Título da conversa");
+  form.append(field);
+
+  row.querySelector(".thread-item").hidden = true;
+  row.prepend(form);
+  field.focus();
+  field.select();
+
+  let settled = false;
+  const finish = async (save) => {
+    if (settled) return;
+    settled = true;
+    const title = field.value.trim();
+    if (save && title && title !== item.title) {
+      try {
+        const response = await fetch(`/api/threads/${item.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        if (response.ok) item.title = (await response.json()).title;
+      } catch {
+        /* o título antigo continua */
+      }
+    }
+    const fresh = threadItem(item);
+    row.replaceWith(fresh);
+    markCurrentThread();
+    fresh.querySelector(".thread-item").focus();
+  };
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    finish(true);
+  });
+  field.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      finish(false);
+    }
+  });
+  field.addEventListener("blur", () => finish(true));
+}
+
+document.addEventListener("click", closeThreadMenu);
+
+function markCurrentThread() {
+  for (const button of threadList.querySelectorAll(".thread-item")) {
+    const current = button.dataset.id === threadId;
+    button.classList.toggle("is-current", current);
+    if (current) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+}
+
+function clearThreadList() {
+  clearTimeout(threadListTimer);
+  threadListTimer = null;
+  threadListRequest++;
+  threadSearch.value = "";
+  threadList.replaceChildren();
+  threadListEmpty.hidden = true;
+}
+
+async function refreshThreadList() {
+  clearTimeout(threadListTimer);
+  threadListTimer = null;
+  const request = ++threadListRequest;
+  const query = threadSearch.value.trim();
+
+  // Menu ou edição abertos: tenta de novo daqui a pouco, sem tirá-los da tela.
+  if (threadListBusy()) {
+    threadListTimer = setTimeout(refreshThreadList, THREAD_LIST_POLL_MS);
+    return;
+  }
+
+  let threads;
+  try {
+    const url = query ? `/api/threads?q=${encodeURIComponent(query)}` : "/api/threads";
+    const response = await fetch(url);
+    if (!response.ok) return;
+    threads = (await response.json()).threads;
+  } catch {
+    return; // sem servidor, a lista fica como estava
+  }
+  if (request !== threadListRequest || document.body.dataset.auth !== "in") return;
+  if (threadListBusy()) {
+    threadListTimer = setTimeout(refreshThreadList, THREAD_LIST_POLL_MS);
+    return;
+  }
+
+  threadList.replaceChildren(...threads.map(threadItem));
+  threadListEmpty.textContent = query ? "Nenhuma conversa encontrada." : "Suas conversas aparecem aqui.";
+  threadListEmpty.hidden = threads.length > 0;
+  markCurrentThread();
+
+  if (threads.some((item) => item.status === "streaming")) {
+    threadListTimer = setTimeout(refreshThreadList, THREAD_LIST_POLL_MS);
+  }
+}
+
+threadSearch.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(refreshThreadList, SEARCH_DEBOUNCE_MS);
+});
+
+async function switchThread(id) {
+  closeSidebar();
+  if (id === threadId) return;
+  leaveView();
+  threadId = id;
+  markCurrentThread();
+  try {
+    await openThread(id);
+  } catch {
+    // Sem servidor: a conversa anterior já saiu; o erro aparece ao perguntar.
+  }
+}
+
+function openSidebar() {
+  document.body.classList.add("sidebar-open");
+  sidebarToggle.setAttribute("aria-expanded", "true");
+  refreshThreadList();
+}
+
+function closeSidebar() {
+  document.body.classList.remove("sidebar-open");
+  sidebarToggle.setAttribute("aria-expanded", "false");
+}
+
+sidebarToggle.addEventListener("click", () => {
+  if (document.body.classList.contains("sidebar-open")) closeSidebar();
+  else openSidebar();
+});
+sidebarBackdrop.addEventListener("click", closeSidebar);
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (threadList.querySelector(".thread-menu")) closeThreadMenu();
+  else closeSidebar();
 });
 
 /* ────────────────────────────────── Markdown ────────────────────────────── */
@@ -1651,7 +1990,9 @@ function renderStoredTurn(turn) {
 }
 
 async function openThread(id) {
+  const view = currentView;
   const response = await fetch(`/api/threads/${id}`);
+  if (view !== currentView) return;
   if (response.status === 401) {
     signedOut();
     return;
@@ -1665,8 +2006,10 @@ async function openThread(id) {
   }
 
   const data = await response.json();
+  if (view !== currentView) return;
   threadId = data.id;
   storeThreadId(data.id);
+  markCurrentThread();
 
   clearConversation();
   if (!data.turns.length) {
@@ -1698,6 +2041,12 @@ async function openThread(id) {
 // reconexão a um turno em andamento (`payload` nulo, um GET no stream).
 // `onHttpError` recebe as recusas do servidor em vez de virarem aviso de erro.
 async function streamTurn(url, payload, body, { onHttpError } = {}) {
+  // Trocar de conversa larga esta leitura (o turno segue no servidor); daí em
+  // diante, ela não mexe mais na tela nem no estado, que já são de outra.
+  const reading = new AbortController();
+  currentReading = reading;
+  const detached = () => reading.signal.aborted;
+
   setStreaming(true);
   scrollToEnd();
 
@@ -1740,10 +2089,12 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
   const handle = (name, data) => {
     if (name === "stream") {
       streamId = data.id;
+      refreshThreadList(); // o indicador de "respondendo" acende
 
     } else if (name === "thread") {
       threadId = data.id;
       storeThreadId(data.id);
+      refreshThreadList();
 
     } else if (name === "token") {
       openBlock();
@@ -1810,6 +2161,7 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
         const name = frame.match(/^event:\s*(.+)$/m)?.[1];
         const raw = frame.match(/^data:\s*(.*)$/m)?.[1];
         if (!name || raw === undefined) continue;
+        if (detached()) return;
 
         let data;
         try {
@@ -1823,10 +2175,11 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
   };
 
   try {
-    let response = await fetch(url, payload === null ? {} : {
+    let response = await fetch(url, payload === null ? { signal: reading.signal } : {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: reading.signal,
     });
 
     if (response.status === 401) {
@@ -1849,12 +2202,13 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
 
     // O turno roda no servidor independente desta conexão. Se ela cair, a
     // leitura reconecta ao stream e continua do último evento recebido.
-    for (let attempt = 0; !outcome; attempt++) {
+    for (let attempt = 0; !outcome && !detached(); attempt++) {
       if (attempt > 0) {
         if (!streamId || attempt > 3) break;
         await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+        if (detached()) break;
         try {
-          response = await fetch(`/api/streams/${streamId}?after=${lastEventId || "0"}`);
+          response = await fetch(`/api/streams/${streamId}?after=${lastEventId || "0"}`, { signal: reading.signal });
         } catch {
           continue;
         }
@@ -1866,22 +2220,27 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
         /* a conexão caiu; a próxima volta reconecta */
       }
     }
-    if (!outcome) throw new Error("A conexão caiu antes do fim da resposta.");
+    if (!outcome && !detached()) throw new Error("A conexão caiu antes do fim da resposta.");
   } catch (error) {
-    body.append(errorNote(`Não foi possível completar a consulta. ${error.message}`));
+    if (!detached()) body.append(errorNote(`Não foi possível completar a consulta. ${error.message}`));
   } finally {
-    closeBlock();
-    if (tickers.length) body.append(tickerPanel(tickers));
-    // Uma ferramenta que nunca respondeu não pode ficar pulsando para sempre.
-    for (const queue of pendingNotes.values()) {
-      for (const note of queue) note.abort();
+    if (currentReading === reading) currentReading = null;
+    if (!detached()) {
+      closeBlock();
+      if (tickers.length) body.append(tickerPanel(tickers));
+      // Uma ferramenta que nunca respondeu não pode ficar pulsando para sempre.
+      for (const queue of pendingNotes.values()) {
+        for (const note of queue) note.abort();
+      }
+      if (outcome?.message_id && outcome.state !== "awaiting_approval") {
+        addTurnActions(body, outcome.message_id, outcome.state);
+      }
+      setStreaming(false);
+      input.focus();
+      refreshThreadList();
     }
-    if (outcome?.message_id && outcome.state !== "awaiting_approval") {
-      addTurnActions(body, outcome.message_id, outcome.state);
-    }
-    setStreaming(false);
-    input.focus();
   }
+  if (detached()) return;
 
   // Sem mensagem no `done`, o servidor parou no meio do turno: o que ficou
   // gravado (e marcado como interrompido) está no Postgres.
@@ -1927,7 +2286,9 @@ async function fork(turn) {
     if (!response.ok) throw new Error(`O servidor respondeu ${response.status}.`);
 
     const { id } = await response.json();
+    leaveView();
     await openThread(id);
+    refreshThreadList();
     input.focus();
   } catch (error) {
     turn.querySelector(".turn-body").append(

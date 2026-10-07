@@ -99,6 +99,14 @@ async def active(redis: aioredis.Redis, thread_id: UUID) -> dict[str, Any] | Non
     return meta if meta and meta.get("after_message_id") else None
 
 
+async def busy(redis: aioredis.Redis, thread_ids: list[UUID]) -> set[UUID]:
+    """As conversas, entre estas, com um turno em andamento."""
+    if not thread_ids:
+        return set()
+    reserved = await redis.mget([_active(thread_id) for thread_id in thread_ids])
+    return {thread_id for thread_id, raw in zip(thread_ids, reserved) if raw is not None}
+
+
 async def owner(redis: aioredis.Redis, stream_id: str) -> dict[str, Any] | None:
     raw = await redis.get(_meta(stream_id))
     return None if raw is None else json.loads(raw)

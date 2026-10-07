@@ -42,12 +42,122 @@ async def create_thread(pool: AsyncConnectionPool, user_id: UUID, title: str) ->
 
 
 async def get_thread(pool: AsyncConnectionPool, thread_id: UUID, user_id: UUID) -> Row | None:
-    """A thread, se existir e pertencer ao usuário."""
+    """A thread, se existir, pertencer ao usuário e não tiver sido apagada."""
     return await _one(
         pool,
-        f"SELECT {THREAD_COLUMNS} FROM agent.threads WHERE id = %s AND user_id = %s",
+        f"""
+        SELECT {THREAD_COLUMNS} FROM agent.threads
+         WHERE id = %s AND user_id = %s AND deleted_at IS NULL
+        """,
         (thread_id, user_id),
     )
+
+
+def _contains(text: str) -> str:
+    """Padrão de LIKE para "contém o texto", com os curingas escapados."""
+    escaped = text.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+    return f"%{escaped}%"
+
+
+async def list_threads(
+    pool: AsyncConnectionPool, user_id: UUID, limit: int, query: str | None = None
+) -> list[Row]:
+    """As conversas do usuário, da atividade mais recente à mais antiga.
+
+    A atividade é a última mensagem do caminho ativo; num fork recém-criado,
+    cuja `head` é uma mensagem antiga, vale a criação da thread.
+
+    Com `query`, só as conversas cujo título ou alguma mensagem contém o texto,
+    sem diferença de caixa nem de acento; `match` traz a mensagem mais recente
+    que o contém, se houver.
+    """
+    return await _all(
+        pool,
+        """
+        SELECT threads.id,
+               threads.title,
+               threads.forked_from_message_id IS NOT NULL AS is_fork,
+               head.state AS head_state,
+               GREATEST(threads.created_at, head.created_at) AS updated_at,
+               found.content AS match
+          FROM agent.threads
+          LEFT JOIN agent.messages head ON head.id = threads.head_message_id
+          LEFT JOIN LATERAL (
+                SELECT message.content
+                  FROM agent.messages message
+                 WHERE %(pattern)s::text IS NOT NULL
+                   AND message.thread_id = threads.id
+                   AND message.role IN ('user', 'assistant')
+                   AND unaccent(message.content) ILIKE unaccent(%(pattern)s::text)
+                 ORDER BY message.created_at DESC
+                 LIMIT 1
+          ) found ON true
+         WHERE threads.user_id = %(user_id)s
+           AND threads.deleted_at IS NULL
+           AND (%(pattern)s::text IS NULL
+                OR unaccent(coalesce(threads.title, '')) ILIKE unaccent(%(pattern)s::text)
+                OR found.content IS NOT NULL)
+         ORDER BY updated_at DESC, threads.id DESC
+         LIMIT %(limit)s
+        """,
+        {"user_id": user_id, "limit": limit, "pattern": _contains(query) if query else None},
+    )
+
+
+async def rename_thread(pool: AsyncConnectionPool, thread_id: UUID, user_id: UUID, title: str) -> bool:
+    row = await _one(
+        pool,
+        """
+        UPDATE agent.threads SET title = %s
+         WHERE id = %s AND user_id = %s AND deleted_at IS NULL
+        RETURNING id
+        """,
+        (title, thread_id, user_id),
+    )
+    return row is not None
+
+
+async def delete_thread(pool: AsyncConnectionPool, thread_id: UUID, user_id: UUID) -> bool:
+    """Esconde a conversa e tira os turnos dela da memória do agente.
+
+    As mensagens ficam: uma bifurcação pode subir até elas. As memórias
+    `conversa` dos turnos desta thread são só o índice de busca deles e saem de
+    vez; se uma delas tinha substituído a versão de um turno de outra thread (a
+    regeneração num fork), a versão anterior volta a valer. Os fatos sobre o
+    usuário guardados nesta conversa continuam.
+    """
+    row = await _one(
+        pool,
+        """
+        WITH thread AS (
+            UPDATE agent.threads SET deleted_at = now()
+             WHERE id = %(thread_id)s AND user_id = %(user_id)s AND deleted_at IS NULL
+            RETURNING id
+        ),
+        turns AS (
+            SELECT DISTINCT sources.memory_id
+              FROM agent.memory_sources sources
+              JOIN agent.messages message ON message.id = sources.message_id
+              JOIN agent.memories memory ON memory.id = sources.memory_id
+             WHERE message.thread_id IN (SELECT id FROM thread)
+               AND memory.category = 'conversa'
+        ),
+        revived AS (
+            UPDATE agent.memories SET superseded_by_id = NULL
+             WHERE superseded_by_id IN (SELECT memory_id FROM turns)
+               AND id NOT IN (SELECT memory_id FROM turns)
+        ),
+        unlinked AS (
+            DELETE FROM agent.memory_sources WHERE memory_id IN (SELECT memory_id FROM turns)
+        ),
+        removed AS (
+            DELETE FROM agent.memories WHERE id IN (SELECT memory_id FROM turns)
+        )
+        SELECT count(*) AS deleted FROM thread
+        """,
+        {"thread_id": thread_id, "user_id": user_id},
+    )
+    return row["deleted"] > 0
 
 
 async def fork_thread(

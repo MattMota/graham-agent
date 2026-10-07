@@ -5,6 +5,8 @@ import asyncio
 import json
 import logging
 import math
+import re
+import unicodedata
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -18,7 +20,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from src.agent.runtime.context import AgentContext
 from src.agent.runtime.state_graph import AgentState, compile_graph
@@ -48,6 +50,12 @@ PURGE_INTERVAL = timedelta(hours=1)
 
 # Tamanho máximo do título, tirado da primeira pergunta da conversa.
 MAX_TITLE = 80
+
+# Quantas conversas a aba lateral lista.
+MAX_THREADS = 100
+
+# Quanto texto aparece em volta do trecho encontrado numa busca de conversas.
+SNIPPET_RADIUS = 50
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -134,6 +142,20 @@ class RegenerateRequest(BaseModel):
 
     thread_id: UUID
     message_id: UUID = Field(description="Qualquer mensagem do turno a regerar.")
+
+
+class RenameRequest(BaseModel):
+    """O título novo de uma conversa."""
+
+    title: str = Field(min_length=1, max_length=MAX_TITLE)
+
+    @field_validator("title")
+    @classmethod
+    def _clean(cls, value: str) -> str:
+        title = " ".join(value.split())
+        if not title:
+            raise ValueError("O título não pode ficar vazio.")
+        return title
 
 
 class ForkRequest(BaseModel):
@@ -741,6 +763,92 @@ async def fork(thread_id: UUID, body: ForkRequest, request: Request) -> dict[str
         request.app.state.pool, thread["user_id"], thread["title"], body.message_id
     )
     return {"id": str(fork_id)}
+
+
+def _fold(text: str) -> str:
+    """Minúsculas e sem acentos, como o `unaccent` + `ILIKE` da busca."""
+    return "".join(
+        char for char in unicodedata.normalize("NFD", text.lower()) if not unicodedata.combining(char)
+    )
+
+
+def _snippet(content: str, query: str) -> dict[str, str] | None:
+    """O trecho da mensagem em volta do texto buscado, em três partes para a
+    interface destacar a do meio sem montar HTML."""
+    folded, origin = [], []
+    for index, char in enumerate(content):
+        for piece in _fold(char):
+            folded.append(piece)
+            origin.append(index)
+    needle = _fold(query)
+    at = "".join(folded).find(needle)
+    if at < 0 or not needle:
+        return None
+    start, end = origin[at], origin[at + len(needle) - 1] + 1
+    left, right = max(0, start - SNIPPET_RADIUS), min(len(content), end + SNIPPET_RADIUS)
+
+    # Sem a marcação do Markdown, que no trecho solto só atrapalha a leitura.
+    def plain(text: str) -> str:
+        return " ".join(re.sub(r"[*#`|>]+", "", text).split())
+
+    before, after = plain(content[left:start]), plain(content[end:right])
+    return {
+        "before": ("…" if left > 0 else "") + (before + " " if before and content[start - 1].isspace() else before),
+        "match": content[start:end],
+        "after": (" " + after if after and content[end].isspace() else after) + ("…" if right < len(content) else ""),
+    }
+
+
+@app.get("/api/threads")
+async def list_threads(
+    request: Request,
+    q: str | None = Query(default=None, max_length=100, description="Texto a buscar no título e nas mensagens."),
+) -> dict[str, Any]:
+    """As conversas do usuário para a aba lateral, as mais recentes primeiro."""
+    query = " ".join(q.split()) if q else None
+    rows = await conversations.list_threads(
+        request.app.state.pool, await require_user(request), MAX_THREADS, query or None
+    )
+    busy = await streams.busy(request.app.state.redis, [row["id"] for row in rows])
+    return _json_safe({
+        "threads": [
+            {
+                "id": str(row["id"]),
+                "title": row["title"],
+                "is_fork": row["is_fork"],
+                "updated_at": row["updated_at"].isoformat(),
+                # Respondendo agora, ou parada à espera de uma confirmação.
+                "status": "streaming" if row["id"] in busy
+                else "awaiting_approval" if row["head_state"] == "awaiting_approval"
+                else None,
+                "snippet": _snippet(row["match"], query) if query and row["match"] else None,
+            }
+            for row in rows
+        ]
+    })
+
+
+@app.patch("/api/threads/{thread_id}")
+async def rename_thread(thread_id: UUID, body: RenameRequest, request: Request) -> dict[str, str]:
+    renamed = await conversations.rename_thread(
+        request.app.state.pool, thread_id, await require_user(request), body.title
+    )
+    if not renamed:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada.")
+    return {"id": str(thread_id), "title": body.title}
+
+
+@app.delete("/api/threads/{thread_id}", status_code=204)
+async def delete_thread(thread_id: UUID, request: Request) -> None:
+    """Apaga a conversa da lista e da memória do agente."""
+    thread = await _require_thread(request, thread_id)
+    # Apagar no meio de uma resposta deixaria o turno gravando numa conversa
+    # que não existe mais para o usuário.
+    if await streams.busy(request.app.state.redis, [thread["id"]]):
+        raise HTTPException(
+            status_code=409, detail="Espere a resposta em andamento terminar para apagar a conversa."
+        )
+    await conversations.delete_thread(request.app.state.pool, thread_id, thread["user_id"])
 
 
 @app.get("/api/threads/{thread_id}")

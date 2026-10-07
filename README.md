@@ -288,6 +288,8 @@ O histórico da conversa vive nas tabelas do schema `agent`, e não no checkpoin
 - **Regerar** cria uma nova resposta como irmã da anterior, pendurada na mesma pergunta. A resposta antiga continua gravada, fora do caminho.
 - **Bifurcar** cria uma thread cuja `head` é a mensagem escolhida. Nada é copiado: o caminho do fork sobe pelos `parent_id` até a thread de origem.
 
+**Apagar é esconder.** `DELETE /api/threads/{id}` grava `deleted_at`, e a conversa some da lista, da busca e do acesso. As mensagens ficam, porque uma bifurcação sobe pelos `parent_id` até elas. As memórias `conversa` dos turnos dela, que são só o índice de busca desses turnos, saem de vez, e o agente não a reencontra mais; os fatos sobre o usuário guardados naquela conversa continuam. A busca de conversas ignora caixa e acentos (`unaccent`).
+
 `agent.thread_path` devolve o caminho ativo em ordem, e é dele que sai o histórico entregue ao modelo a cada turno. Respostas interrompidas ou com erro ficam fora desse histórico, assim como pedidos de ferramenta que nunca receberam resposta, que os provedores recusam.
 
 Cada mensagem tem um estado: `streaming` enquanto é gerada, `awaiting_approval` enquanto o turno espera a confirmação de uma operação, depois `completed`, `interrupted` (o servidor parou no meio do turno ou a confirmação foi abandonada) ou `failed`. Quando o servidor sobe, o que ficou em `streaming` vira `interrupted`.
@@ -298,7 +300,8 @@ Um turno não depende da conexão do navegador. O servidor roda o turno em segun
 
 - **Recarregar a página no meio de uma resposta:** `GET /api/threads/{id}` devolve o histórico até a mensagem de onde o turno parte e o `active_stream`. A interface redesenha o resto lendo o stream do começo e continua ao vivo.
 - **A conexão cair sem recarregar:** cada evento traz o id do Redis no campo `id:` do SSE. A interface reconecta em `GET /api/streams/{id}?after=<último id>` e recebe só o que faltou.
-- **Um turno por conversa:** enquanto há um em andamento, outra pergunta, regeneração ou confirmação na mesma conversa recebe `409`.
+- **Trocar de conversa no meio de uma resposta:** a interface só larga a leitura do stream; o turno segue no servidor. A aba de conversas marca a conversa como "respondendo" e, ao voltar a ela, a resposta é retomada como numa recarga.
+- **Um turno por conversa:** enquanto há um em andamento, outra pergunta, regeneração ou confirmação na mesma conversa recebe `409`. Conversas diferentes respondem ao mesmo tempo.
 - **O servidor parar no meio:** na subida seguinte, a mensagem em geração vira `interrupted` no Postgres, e o stream recebe um `done` final, para quem estiver lendo saber que acabou.
 
 Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da conversa (`graham:thread:{id}:active`).
@@ -381,6 +384,9 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 | `POST` | `/api/regenerate` | Recebe `{thread_id, message_id}` e transmite uma nova resposta para aquele turno |
 | `POST` | `/api/approvals` | Recebe `{thread_id, message_id, decisions}` e transmite a continuação do turno pausado |
 | `POST` | `/api/threads/{id}/fork` | Recebe `{message_id}` e devolve a nova conversa |
+| `GET` | `/api/threads` | As conversas do usuário (até 100), da atividade mais recente à mais antiga, com o status `streaming` ou `awaiting_approval`; com `?q=`, só as que têm o texto no título ou nas mensagens, com o trecho encontrado |
+| `PATCH` | `/api/threads/{id}` | Recebe `{title}` e renomeia a conversa |
+| `DELETE` | `/api/threads/{id}` | Apaga a conversa; `409` se houver resposta em andamento |
 | `GET` | `/api/threads/{id}` | O caminho ativo da conversa, agrupado em turnos |
 | `GET` | `/api/streams/{id}` | Reconecta a um turno: os eventos depois de `?after=`, ou todos |
 | `GET` | `/api/health` | Confirma que o grafo compilou e lista seus nós |
