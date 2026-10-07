@@ -397,6 +397,8 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 
 Ao final de cada resposta, os tickers citados viram cartões. A lista é o cruzamento de duas condições: o ticker passou por alguma ferramenta (logo, existe) **e** foi de fato mencionado no texto da resposta.
 
+Citado por extenso (`BBAS3.SA`), o ticker sempre conta. Citado só pela base (`BBAS3`), vale uma listagem dela: a busca por empresa devolve também as de outras bolsas (`BBAS3.BA`, em Buenos Aires, cotada em peso), e o cartão seria de um ativo de que o agente não falou. Fica a que o agente consultou, senão a da B3, senão a primeira da busca.
+
 Quando o agente já consultou `cotacao_atual_acao`, a cotação completa vem de graça no próprio `on_tool_end` — nenhuma consulta é repetida. Só os tickers que apareceram por outro caminho são buscados, em paralelo e depois que a resposta terminou de ser transmitida. O teto é de 8 cartões por resposta.
 
 Os cartões não são gravados: ao reabrir uma conversa, as respostas e as consultas voltam, mas os cartões não.

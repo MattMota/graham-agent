@@ -275,21 +275,40 @@ def _symbols_in(payload: Any) -> list[str]:
     return symbols
 
 
-def _mentioned(symbol: str, text: str) -> bool:
-    """O agente citou este ticker na resposta? 'BBAS3' conta por 'BBAS3.SA'."""
-    return symbol in text or symbol.split(".")[0] in text
+def _cited(code: str, text: str) -> bool:
+    """O código aparece no texto como palavra inteira ('ITUB4' não vale dentro de 'ITUB4F')."""
+    return re.search(rf"(?<![\w.]){re.escape(code)}(?![\w])", text) is not None
+
+
+def _cited_symbols(candidates: list[str], quotes: dict[str, Any], answer: str) -> list[str]:
+    """Os tickers que o agente citou, na ordem em que aparecem na resposta.
+
+    O ticker por extenso ('BBAS3.SA') sempre conta. Citado só pela base
+    ('BBAS3'), vale uma listagem dela: a busca por empresa devolve também as de
+    outras bolsas (BBAS3.BA, em Buenos Aires, cotada em peso), e o cartão seria
+    de um ativo de que o agente não falou. Fica a que o agente consultou, senão a
+    da B3, senão a primeira da busca.
+    """
+    unique = list(dict.fromkeys(candidates))
+    wanted = [symbol for symbol in unique if _cited(symbol, answer)]
+    by_base: dict[str, list[str]] = {}
+    for symbol in unique:
+        by_base.setdefault(symbol.split(".")[0], []).append(symbol)
+    for base, listings in by_base.items():
+        if any(symbol in wanted for symbol in listings) or not _cited(base, answer):
+            continue
+        wanted.append(min(
+            listings,
+            key=lambda symbol: (symbol not in quotes, not symbol.endswith(".SA"), listings.index(symbol)),
+        ))
+    return sorted(wanted, key=lambda symbol: answer.find(symbol.split(".")[0]))
 
 
 async def _ticker_cards(
     quotes: dict[str, dict[str, Any]], candidates: list[str], answer: str
 ) -> list[dict[str, Any]]:
     """Monta os cartões dos tickers citados, buscando só o que ainda falta."""
-    wanted = []
-    for symbol in candidates:
-        if symbol not in wanted and _mentioned(symbol, answer):
-            wanted.append(symbol)
-    wanted.sort(key=lambda symbol: answer.find(symbol.split(".")[0]))
-    wanted = wanted[:MAX_TICKER_CARDS]
+    wanted = _cited_symbols(candidates, quotes, answer)[:MAX_TICKER_CARDS]
 
     missing = [symbol for symbol in wanted if symbol not in quotes]
     if missing:
