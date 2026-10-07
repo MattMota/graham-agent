@@ -213,11 +213,32 @@ button { font: inherit; color: inherit; cursor: pointer; }
   color: var(--gray);
 }
 
+/* Pergunta à direita, num balão; resposta à esquerda, em texto corrido. A
+   resposta continua o par sem filete entre os dois. */
+.turn-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.turn-user + .turn-agent {
+  padding-top: 4px;
+  border-top: none;
+}
+
 .turn-user .turn-body {
+  max-width: min(78%, 560px);
+  padding: 11px 18px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md) var(--r-md) 6px var(--r-md);
+  box-shadow: var(--shadow-soft);
   font-family: var(--sans);
   font-size: 1rem;
   line-height: 1.6;
   color: var(--ink-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* O texto do agente é o que se lê com atenção. */
@@ -1139,6 +1160,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   :root { --gutter: 16px; }
   .hero { padding-bottom: 4vh; }
   .turn-agent .turn-body { font-size: 1.14rem; }
+  .turn-user .turn-body { max-width: 88%; }
   .suggestion { font-size: 0.86rem; padding: 10px 16px; }
   .ticker-card { flex-basis: 100%; max-width: 100%; min-width: 0; }
   .tool-detail { grid-template-columns: 1fr; }
