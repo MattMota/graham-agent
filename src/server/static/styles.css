@@ -1119,6 +1119,15 @@ body[data-auth="in"] .auth { display: none; }
   pointer-events: none;
 }
 
+/* Quanto o modelo pensou no turno: discreto, ao lado de regerar e bifurcar. */
+.turn-thought {
+  margin-left: 8px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--gray-light);
+  cursor: default;
+}
+
 .turn-flag {
   display: inline-flex;
   align-items: center;

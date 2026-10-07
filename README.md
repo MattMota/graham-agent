@@ -363,6 +363,7 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 |---|---|---|
 | `stream` | `{id}` | Primeiro evento: o stream do turno, para reconectar se a conexão cair |
 | `thread` | `{id, title}` | Guarda o id da conversa (criada na primeira pergunta) |
+| `thinking` | `{state: "start", at}` ou `{state: "end", ms}` | A linha "pensando", com o tempo desde `at`; o total vai para o "pensou por" do turno. O tempo é o intervalo entre o início da chamada ao modelo e a primeira saída dele: o raciocínio em si não é lido |
 | `token` | `{text}` | Texto da resposta, pedaço a pedaço |
 | `tool_start` | `{name, input}` | Abre o aviso "consultando…" e preenche *Argumentos* |
 | `tool_end` | `{name, output}` | Fecha o aviso e preenche *Resultados* |

@@ -2078,7 +2078,7 @@ function actionButton(icon, label, onClick) {
 // Regerar e bifurcar, embaixo de cada resposta. `messageId` é a última
 // mensagem do turno: a partir dela o fork continua, e dela o servidor sobe até
 // a pergunta que será respondida de novo.
-function addTurnActions(body, messageId, state) {
+function addTurnActions(body, messageId, state, thinkingMs = 0) {
   const turn = body.closest(".turn");
   turn.dataset.messageId = messageId;
 
@@ -2097,7 +2097,46 @@ function addTurnActions(body, messageId, state) {
     actionButton("regenerate", "Regerar resposta", () => regenerate(turn)),
     actionButton("fork", "Bifurcar conversa a partir daqui", () => fork(turn)),
   );
+  if (thinkingMs >= 1000) {
+    const thought = document.createElement("span");
+    thought.className = "turn-thought";
+    thought.textContent = `pensou por ${duration(thinkingMs)}`;
+    thought.title = "Tempo em que o modelo raciocinou antes de responder e de chamar as ferramentas";
+    bar.append(thought);
+  }
   turn.append(bar);
+}
+
+// "12 s", "1 min 05 s": quanto o modelo pensou.
+function duration(milliseconds) {
+  const seconds = Math.max(1, Math.round(milliseconds / 1000));
+  if (seconds < 60) return `${seconds} s`;
+  return `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`;
+}
+
+// Enquanto o modelo pensa antes de responder ou de chamar uma ferramenta, a
+// tela não fica parada: uma linha diz que ele está pensando, e há quanto tempo.
+function thinkingNote(startedAt) {
+  const note = document.createElement("div");
+  note.className = "tool-note is-working thinking-note";
+  const text = document.createElement("span");
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  note.append(text, dot);
+
+  const tick = () => {
+    const elapsed = Date.now() - startedAt;
+    text.textContent = elapsed >= 1000 ? `pensando · ${duration(elapsed)}` : "pensando";
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+  return {
+    el: note,
+    stop() {
+      clearInterval(timer);
+      note.remove();
+    },
+  };
 }
 
 function forkNote() {
@@ -2141,7 +2180,7 @@ function renderStoredTurn(turn) {
   // regerar nem bifurcar ainda.
   body.closest(".turn").dataset.messageId = turn.id;
   if (turn.state !== "awaiting_approval" && turn.state !== "streaming") {
-    addTurnActions(body, turn.id, turn.state);
+    addTurnActions(body, turn.id, turn.state, turn.thinking_ms);
   }
 }
 
@@ -2214,6 +2253,10 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
   // A rodada de consultas em curso: termina quando o agente volta a falar.
   let run = null;
 
+  // A linha "pensando" da chamada ao modelo em curso, e o total do turno.
+  let thinking = null;
+  let thinkingMs = 0;
+
   // O agente dispara várias ferramentas de uma vez, então cada aviso pendente
   // é guardado por nome — a lista cobre o caso da mesma ferramenta repetida.
   const pendingNotes = new Map();
@@ -2255,6 +2298,18 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
       threadId = data.id;
       storeThreadId(data.id);
       refreshThreadList();
+
+    } else if (name === "thinking") {
+      thinking?.stop();
+      thinking = null;
+      if (data.state === "start") {
+        closeBlock();
+        thinking = thinkingNote(data.at);
+        body.append(thinking.el);
+        scrollToEnd();
+      } else {
+        thinkingMs += data.ms || 0;
+      }
 
     } else if (name === "token") {
       openBlock();
@@ -2389,6 +2444,7 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
     if (!detached()) body.append(errorNote(`Não foi possível completar a consulta. ${error.message}`));
   } finally {
     if (currentReading === reading) currentReading = null;
+    thinking?.stop();
     if (!detached()) {
       closeBlock();
       if (tickers.length) body.append(tickerPanel(tickers));
@@ -2397,7 +2453,7 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
         for (const note of queue) note.abort();
       }
       if (outcome?.message_id && outcome.state !== "awaiting_approval") {
-        addTurnActions(body, outcome.message_id, outcome.state);
+        addTurnActions(body, outcome.message_id, outcome.state, thinkingMs);
       }
       setStreaming(false);
       input.focus();

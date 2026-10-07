@@ -32,6 +32,8 @@ class TurnRecorder:
         # O texto chega em pedaços e só é gravado quando a mensagem fecha; se o
         # turno for interrompido, é o que se salva da resposta parcial.
         self.partial = ""
+        # Quanto o modelo pensou antes de produzir algo nesta mensagem.
+        self.thinking_ms: int | None = None
         # Tool calls da última mensagem do modelo, e a linha que as guarda.
         self.calls: dict[str, dict] = {}
         self.calls_id: UUID | None = None
@@ -72,9 +74,14 @@ class TurnRecorder:
         if self.current is None:
             self.current = await self._new_assistant(self.pool, self.thread_id, self.last)
         self.partial = ""
+        self.thinking_ms = None
 
     def token(self, text: str) -> None:
         self.partial += text
+
+    def thought(self, milliseconds: int) -> None:
+        """Quanto o modelo pensou antes da primeira saída desta mensagem."""
+        self.thinking_ms = milliseconds
 
     async def model_finished(self, message: AIMessage) -> None:
         await conversations.update_message(
@@ -82,7 +89,10 @@ class TurnRecorder:
             self.current,
             content=message.text,
             state="completed",
-            payload={"tool_calls": message.tool_calls} if message.tool_calls else None,
+            payload={
+                **({"tool_calls": message.tool_calls} if message.tool_calls else {}),
+                **({"thinking_ms": self.thinking_ms} if self.thinking_ms is not None else {}),
+            } or None,
         )
         self.calls = {call["id"]: call for call in message.tool_calls}
         if message.tool_calls:

@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import re
+import time
 import unicodedata
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -91,7 +92,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ) from error
 
     async with create_pool() as pool:
-        saver = AsyncPostgresSaver(pool)
         # Com o banco atrás do código, as falhas só apareceriam no meio do uso
         # (uma coluna ou função que não existe); melhor não subir.
         if pending := await pending_migrations(pool):
@@ -99,6 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 f"Migrations pendentes: {', '.join(pending)}. Aplique com: uv run db/migrate.py"
             )
 
+        saver = AsyncPostgresSaver(pool)
         await saver.setup()
 
         interrupted = await conversations.interrupt_streaming(pool)
@@ -417,6 +418,19 @@ async def _run_turn(
     # uma ferramenta, e eles não devem aparecer na tela.
     comecou = False
 
+    # Quando começou a chamada ao modelo que ainda não produziu nada visível.
+    # Esse silêncio é o raciocínio do modelo: o gateway o envia num campo que o
+    # ChatOpenAI descarta, então ele não é lido, só medido. Basta para a tela
+    # mostrar "pensando" e quanto tempo levou.
+    thinking_since: float | None = None
+
+    def stop_thinking() -> str:
+        nonlocal thinking_since
+        milliseconds = round((time.monotonic() - thinking_since) * 1000)
+        thinking_since = None
+        recorder.thought(milliseconds)
+        return _sse("thinking", {"state": "end", "ms": milliseconds})
+
     # Cotações já obtidas pelas ferramentas, e todo ticker que passou por elas.
     quotes: dict[str, dict[str, Any]] = {}
     candidates: list[str] = []
@@ -434,9 +448,15 @@ async def _run_turn(
 
             if kind == "on_chat_model_start":
                 await recorder.model_started()
+                thinking_since = time.monotonic()
+                # A hora de início, e não só o aviso: quem reconecta no meio
+                # continua a contagem de onde ela está.
+                yield _sse("thinking", {"state": "start", "at": round(time.time() * 1000)})
 
             elif kind == "on_chat_model_stream":
                 chunk = event["data"]["chunk"]
+                if thinking_since is not None and (chunk.content.strip() or chunk.tool_call_chunks):
+                    yield stop_thinking()
                 if chunk.content:
                     recorder.token(chunk.content)
                     if not comecou and not chunk.content.strip():
@@ -480,6 +500,8 @@ async def _run_turn(
 
             # O fim de cada nó traz as mensagens que ele acrescentou ao estado.
             elif kind == "on_chain_end" and event["name"] == "agent":
+                if thinking_since is not None:
+                    yield stop_thinking()
                 await recorder.model_finished(event["data"]["output"]["messages"][-1])
 
             elif kind == "on_chain_end" and event["name"] == "approval":
@@ -631,7 +653,14 @@ def _display_turn(rows: list[dict[str, Any]]) -> dict[str, Any]:
     state = last["state"] if finished else "interrupted"
     if (last["payload"] or {}).get("approval") and state == "completed":
         state = "interrupted"
-    return {"role": "assistant", "id": str(last["id"]), "state": state, "blocks": blocks}
+    thinking_ms = sum((row["payload"] or {}).get("thinking_ms", 0) for row in rows if row["role"] == "assistant")
+    return {
+        "role": "assistant",
+        "id": str(last["id"]),
+        "state": state,
+        "blocks": blocks,
+        "thinking_ms": thinking_ms,
+    }
 
 
 async def _reserve(request: Request, thread: dict[str, Any]) -> str:
