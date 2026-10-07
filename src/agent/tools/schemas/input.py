@@ -72,6 +72,34 @@ class TickerNewsInput(TickerInput):
     ] = "news"
 
 
+class TopicNewsInput(BaseModel):
+    """Argumentos da busca de notícias por tema."""
+
+    query: str = Field(
+        title="Tema",
+        description=(
+            "Palavras-chave em português, como numa busca de notícias: o assunto e os nomes "
+            "que o identificam ('privatização Banco do Brasil', 'eleições estatais', "
+            "'taxa Selic Copom'). Sem frases inteiras nem tickers."
+        ),
+        min_length=2,
+        max_length=120,
+    )
+    days: int = Field(
+        default=30,
+        title="Período em dias",
+        description="Só notícias publicadas nos últimos N dias.",
+        ge=1,
+        le=365,
+    )
+    count: ResultLimit = 8
+
+    @field_validator("query")
+    @classmethod
+    def _clean(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
 class MarketInput(BaseModel):
     """Argumentos da consulta de resumo de mercado."""
 

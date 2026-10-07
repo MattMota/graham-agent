@@ -125,7 +125,7 @@ class MarketSummary(BaseModel):
 
 
 class NewsArticle(BaseModel):
-    """Notícia publicada sobre um ticker."""
+    """Notícia publicada sobre um ticker ou um tema."""
 
     title: Optional[str] = Field(default=None, description="Título da notícia.")
     summary: Optional[str] = Field(default=None, description="Resumo da notícia.")
@@ -148,6 +148,18 @@ class TickerNews(BaseModel):
     note: Optional[str] = Field(
         default=None, description="Como as notícias foram encontradas, quando isso muda a leitura."
     )
+
+
+class TopicNews(BaseModel):
+    """Notícias encontradas pela busca de um tema."""
+
+    query: str = Field(description="O tema buscado.")
+    days: int = Field(description="Período da busca, em dias.")
+    articles: list[NewsArticle] = Field(
+        default_factory=list,
+        description="Notícias mais relevantes, da mais recente à mais antiga.",
+    )
+    note: Optional[str] = Field(default=None, description="Como ler as notícias.")
 
 
 class CompanyMatch(BaseModel):

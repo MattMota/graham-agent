@@ -20,6 +20,7 @@ A resposta chega **token a token**, com os dados aparecendo conforme são buscad
 |---|---|---|
 | `cotacao_atual_acao` | `ticker_name` | Preço, variação do dia, abertura, máxima/mínima, volume, valor de mercado, faixa de 52 semanas e médias móveis |
 | `noticias_acao` | `ticker_name`, `count`, `tab` | Notícias recentes com título, resumo, data, veículo e link |
+| `noticias_tema` | `query`, `days`, `count` | Notícias de um tema (eleições, privatizações, juros, um setor) em fontes brasileiras, pela busca do Google News |
 | `buscar_ticker_por_empresa` | `company_name`, `count` | Tickers correspondentes a um nome de empresa, com bolsa, setor e indústria |
 | `buscar_tickers_por_industria` | `industry`, `count`, `region` | Principais empresas de um dos 145 subsetores da classificação Yahoo |
 | `ver_carteira` | `ticker_name?`, `currency?`, `include_trades?` | Posições com preço médio, total investido, valor atual e resultado, totais por moeda e resultado das vendas |
@@ -293,7 +294,7 @@ Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da con
 
 | O quê | Chave | TTL | Observações |
 |---|---|---|---|
-| Notícias | `graham:market:noticias_acao:*` | 1h | Resultado vazio não entra no cache: pode ser a fonte fora do ar |
+| Notícias | `graham:market:noticias_acao:*`, `graham:market:noticias_tema:*` | 1h | Resultado vazio não entra no cache: pode ser a fonte fora do ar |
 | Proventos de um ativo | `graham:market:proventos:*` | 24h | |
 | Histórico de preços | `graham:market:historico:*` | 1h | |
 | Busca de ticker e triagem por setor | `graham:market:buscar_*:*` | 24h | Mudam raramente |

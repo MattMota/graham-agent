@@ -2,9 +2,12 @@
 import inspect, math, re, sys
 from langchain_core.tools import BaseTool
 
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Literal, Optional
 
+import httpx
 import pandas as pd
 import yfinance as yf
 from langchain_core.tools import tool
@@ -16,6 +19,7 @@ from src.agent.tools.schemas.input import (
     IndustrySearchInput,
     TickerInput,
     TickerNewsInput,
+    TopicNewsInput,
 )
 from src.agent.tools.schemas.output import (
     CompanyMatch,
@@ -25,6 +29,7 @@ from src.agent.tools.schemas.output import (
     NewsArticle,
     StockQuote,
     TickerNews,
+    TopicNews,
 )
 
 
@@ -249,6 +254,74 @@ def get_ticker_news(
         note = SEARCH_NOTE if articles else None
 
     news = TickerNews(ticker_name=ticker_name, articles=articles, note=note)
+    return news.model_dump(mode="json")
+
+
+# A busca da Yahoo só acha notícias pelo nome de empresas, e em inglês: para
+# "privatização Banco do Brasil" devolve zero. A busca do Google News, em
+# português e com fontes brasileiras, acha o tema. É um feed RSS público, sem
+# chave; os links passam pelo Google antes de chegar ao veículo.
+GOOGLE_NEWS_SEARCH = "https://news.google.com/rss/search"
+GOOGLE_NEWS_TIMEOUT = 15
+
+TOPIC_NOTE = (
+    "Encontradas pela busca do Google News, em fontes brasileiras. Não trazem resumo, "
+    "então não descreva o conteúdo além do que o título diz; cite o veículo e a data, "
+    "e ofereça o link para quem quiser os detalhes."
+)
+
+
+def _google_news(query: str, days: int) -> list[ET.Element]:
+    """Os itens da busca, do mais relevante ao menos."""
+    response = httpx.get(
+        GOOGLE_NEWS_SEARCH,
+        params={"q": f"{query} when:{days}d", "hl": "pt-BR", "gl": "BR", "ceid": "BR:pt-419"},
+        timeout=GOOGLE_NEWS_TIMEOUT,
+        follow_redirects=True,
+    )
+    response.raise_for_status()
+    return ET.fromstring(response.text).findall("./channel/item")
+
+
+def _topic_article(item: ET.Element) -> NewsArticle:
+    publisher = item.findtext("source")
+    title = item.findtext("title") or ""
+    # O título vem como "Manchete - Veículo"; o veículo já tem campo próprio.
+    if publisher and title.endswith(f" - {publisher}"):
+        title = title[: -len(publisher) - 3]
+    published = item.findtext("pubDate")
+    return NewsArticle(
+        title=title or None,
+        published_at=parsedate_to_datetime(published) if published else None,
+        link=item.findtext("link"),
+        publisher=publisher,
+    )
+
+
+@tool(
+    "noticias_tema",
+    description=(
+        "Busca notícias recentes sobre um tema em fontes brasileiras: política econômica, "
+        "eleições, privatizações, regulação, juros, um setor inteiro. Use quando o assunto não "
+        "for só uma empresa, ou quando as notícias da ação não explicarem um movimento do papel: "
+        "busque o tema que pode estar por trás dele (a BBAS3 caiu por notícias eleitorais sobre "
+        "privatizar o Banco do Brasil, por exemplo)."
+    ),
+    args_schema=TopicNewsInput,
+)
+@cached("noticias_tema", ttl=NEWS_TTL, keep=lambda result: bool(result["articles"]))
+def search_topic_news(query: str, days: int = 30, count: int = 8) -> dict[str, Any]:
+    try:
+        items = _google_news(query, days)
+    except (httpx.HTTPError, ET.ParseError) as error:
+        raise ValueError(f"A busca de notícias está indisponível agora ({error}).") from error
+
+    # As mais relevantes, lidas da mais recente à mais antiga.
+    articles = [_topic_article(item) for item in items[:count]]
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    articles.sort(key=lambda article: article.published_at or epoch, reverse=True)
+
+    news = TopicNews(query=query, days=days, articles=articles, note=TOPIC_NOTE if articles else None)
     return news.model_dump(mode="json")
 
 
