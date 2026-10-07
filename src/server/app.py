@@ -2,12 +2,9 @@
 as respostas do agente."""
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 import math
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -17,7 +14,7 @@ from uuid import UUID
 
 import anyio
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
@@ -27,10 +24,11 @@ from src.agent.runtime.context import AgentContext
 from src.agent.runtime.state_graph import AgentState, compile_graph
 from src.agent.tools.definition import get_current_stock_price
 from src.agent.tools.registry import APPROVAL_REQUIRED, TOOLS
-from src.server import streams
+from src.server import auth, streams
+from src.server.auth import require_user
 from src.server.recorder import TurnRecorder
 from src.agent.memory import processing as memory_processing
-from src.storage import cache, conversations, memories
+from src.storage import accounts, cache, conversations, memories
 from src.storage.database import create_pool
 from src.storage.history import split_turns, to_langchain
 
@@ -51,20 +49,18 @@ PURGE_INTERVAL = timedelta(hours=1)
 # Tamanho máximo do título, tirado da primeira pergunta da conversa.
 MAX_TITLE = 80
 
-USER_COOKIE = "graham_user"
-USER_COOKIE_MAX_AGE = int(timedelta(days=365).total_seconds())
-
 logger = logging.getLogger("uvicorn.error")
 
 
-async def _purge_checkpoints(pool, saver: AsyncPostgresSaver) -> None:
-    """Apaga, de hora em hora, os checkpoints dos turnos que passaram da retenção."""
+async def _purge_expired(pool, saver: AsyncPostgresSaver) -> None:
+    """Apaga, de hora em hora, os checkpoints que passaram da retenção e as sessões vencidas."""
     while True:
         try:
             for graph_thread_id in await conversations.expired_graph_threads(pool, CHECKPOINT_RETENTION):
                 await saver.adelete_thread(graph_thread_id)
+            await accounts.purge_sessions(pool)
         except Exception:  # noqa: BLE001 - uma falha na limpeza não pode derrubar o servidor
-            logger.exception("Falha ao apagar checkpoints vencidos")
+            logger.exception("Falha ao apagar checkpoints ou sessões vencidas")
         await asyncio.sleep(PURGE_INTERVAL.total_seconds())
 
 
@@ -78,9 +74,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "O banco exige o SelectorEventLoop no Windows. "
             "Rode com: uv run uvicorn src.server.app:app --reload"
         )
-    if not os.getenv("SESSION_SECRET"):
-        raise RuntimeError("Defina SESSION_SECRET no .env para assinar o cookie do usuário.")
-
     try:
         redis = await cache.connect()
     except Exception as error:
@@ -107,7 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Os turnos em andamento, que rodam fora das conexões HTTP.
         app.state.turns = set()
 
-        purge = asyncio.create_task(_purge_checkpoints(pool, saver))
+        purge = asyncio.create_task(_purge_expired(pool, saver))
         try:
             yield
         finally:
@@ -123,6 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Graham Agent", description="Seu corretor de confiança", lifespan=lifespan)
+app.include_router(auth.router)
 
 
 class ChatRequest(BaseModel):
@@ -167,36 +161,8 @@ class ApprovalRequest(BaseModel):
     decisions: list[Decision]
 
 
-# ─────────────────────────────── Usuário anônimo ────────────────────────────
-
-
-def _sign(user_id: UUID) -> str:
-    """Valor do cookie: o id do usuário seguido de um HMAC dele."""
-    secret = os.environ["SESSION_SECRET"].encode()
-    digest = hmac.new(secret, str(user_id).encode(), hashlib.sha256).hexdigest()
-    return f"{user_id}.{digest}"
-
-
-def _verify(cookie: str | None) -> UUID | None:
-    """O id do usuário, se o cookie existir e a assinatura conferir."""
-    if not cookie or "." not in cookie:
-        return None
-    try:
-        user_id = UUID(cookie.split(".", 1)[0])
-    except ValueError:
-        return None
-    return user_id if hmac.compare_digest(cookie, _sign(user_id)) else None
-
-
-def _require_user(request: Request) -> UUID:
-    user_id = _verify(request.cookies.get(USER_COOKIE))
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Sessão ausente; chame /api/session.")
-    return user_id
-
-
 async def _require_thread(request: Request, thread_id: UUID) -> dict[str, Any]:
-    thread = await conversations.get_thread(request.app.state.pool, thread_id, _require_user(request))
+    thread = await conversations.get_thread(request.app.state.pool, thread_id, await require_user(request))
     if thread is None:
         raise HTTPException(status_code=404, detail="Conversa não encontrada.")
     return thread
@@ -644,33 +610,13 @@ def _launch(
 # ─────────────────────────────────── Rotas ──────────────────────────────────
 
 
-@app.post("/api/session")
-async def session(request: Request) -> JSONResponse:
-    """Garante o cookie do usuário anônimo; na primeira visita, cria o usuário."""
-    pool = request.app.state.pool
-    user_id = _verify(request.cookies.get(USER_COOKIE))
-    if user_id is not None and await conversations.user_exists(pool, user_id):
-        return JSONResponse({"status": "ok"})
-
-    user_id = await conversations.create_user(pool)
-    response = JSONResponse({"status": "created"})
-    response.set_cookie(
-        USER_COOKIE,
-        _sign(user_id),
-        max_age=USER_COOKIE_MAX_AGE,
-        httponly=True,
-        samesite="lax",
-    )
-    return response
-
-
 @app.post("/api/chat")
 async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     """Responde a uma pergunta transmitindo os tokens conforme são gerados."""
     pool, redis = request.app.state.pool, request.app.state.redis
     if body.thread_id is None:
         title = body.message.strip().splitlines()[0][:MAX_TITLE]
-        thread = await conversations.create_thread(pool, _require_user(request), title)
+        thread = await conversations.create_thread(pool, await require_user(request), title)
     else:
         thread = await _require_thread(request, body.thread_id)
 
@@ -780,7 +726,7 @@ async def resume_stream(
     """Reconecta a um turno: os eventos depois de `after`, ou todos, sem ele."""
     redis = request.app.state.redis
     meta = await streams.owner(redis, str(stream_id))
-    if meta is None or meta["user_id"] != str(_require_user(request)):
+    if meta is None or meta["user_id"] != str(await require_user(request)):
         raise HTTPException(status_code=404, detail="Stream não encontrado ou já expirado.")
     return _event_stream(streams.consume(redis, str(stream_id), after))
 

@@ -65,6 +65,8 @@ Declaradas em `pyproject.toml` e resolvidas pelo `uv`:
 | `psycopg` + `psycopg-pool` | Driver e pool de conexões do Postgres |
 | `langgraph-checkpoint-postgres` | Checkpoints do grafo no Postgres |
 | `redis` | Cache dos dados de mercado e streams retomáveis |
+| `bcrypt` | Hash das senhas |
+| `httpx` | Chamadas ao modelo de decisão e à busca de notícias |
 | `dotenv` | Carrega as credenciais do `.env` |
 
 ---
@@ -85,13 +87,12 @@ Crie um arquivo `.env` na raiz do projeto:
 MODEL_PROVIDER_BASE_URL=https://ai-gateway.vercel.sh/v1
 MODEL_PROVIDER_API_KEY=sua-chave-aqui
 DATABASE_URL=postgresql://graham:graham@127.0.0.1:5432/graham?connect_timeout=10
-SESSION_SECRET=uma-sequencia-aleatoria-longa
 REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
 `MODEL_PROVIDER_BASE_URL` precisa apontar para um endpoint compatível com a API de *chat completions* da OpenAI. Sem ela, o `ChatOpenAI` cai no padrão (`api.openai.com`) e a chave do seu provedor é rejeitada com `401`.
 
-`DATABASE_URL` aponta para o Postgres do `compose.yaml`. Use `127.0.0.1`, não `localhost`: no Windows, `localhost` resolve primeiro para o IPv6 (`::1`), onde a porta não está publicada, e a conexão assíncrona do psycopg fica presa nesse endereço até o tempo limite em vez de passar para o IPv4. O `connect_timeout` faz qualquer falha de conexão aparecer em 10 segundos, em vez de travar. `SESSION_SECRET` assina o cookie que identifica o usuário anônimo; gere um com `uv run python -c "import secrets; print(secrets.token_urlsafe(32))"`. Trocá-lo invalida os cookies existentes, e cada navegador passa a ser um usuário novo.
+`DATABASE_URL` aponta para o Postgres do `compose.yaml`. Use `127.0.0.1`, não `localhost`: no Windows, `localhost` resolve primeiro para o IPv6 (`::1`), onde a porta não está publicada, e a conexão assíncrona do psycopg fica presa nesse endereço até o tempo limite em vez de passar para o IPv4. O `connect_timeout` faz qualquer falha de conexão aparecer em 10 segundos, em vez de travar.
 
 ### Banco de dados e Redis
 
@@ -101,7 +102,7 @@ docker compose ps           # espere o status "healthy"
 uv run db/migrate.py        # aplica as migrations pendentes
 ```
 
-As migrations são arquivos SQL numerados em `db/migrations/`, aplicados em ordem e registrados em `public.schema_migrations`. As tabelas dos checkpoints ficam de fora: o `AsyncPostgresSaver` as cria no schema `langgraph` quando o servidor sobe.
+As migrations são arquivos SQL numerados em `db/migrations/`, aplicados em ordem e registrados em `public.schema_migrations`. A `0006_auth.sql` transforma o usuário anônimo de antes da autenticação na conta `user@email.com`, senha `graham`, com todos os dados dele; num banco novo nenhuma conta é criada, e a primeira se cria na tela de entrada. As tabelas dos checkpoints ficam de fora: o `AsyncPostgresSaver` as cria no schema `langgraph` quando o servidor sobe.
 
 O Redis não guarda nada em disco: tudo nele é cache ou stream com TTL. Reiniciá-lo só custa refazer consultas à Yahoo e encerrar os turnos que estavam em andamento. Para espiá-lo, `docker compose exec redis redis-cli` abre um terminal (`KEYS graham:*` lista as chaves).
 
@@ -147,7 +148,7 @@ As instruções do agente ficam em `src/agent/instructions/system_prompt.md`, em
 uv run uvicorn src.server.app:app --reload
 ```
 
-Abra **http://127.0.0.1:8000**. O `--reload` reinicia o servidor a cada mudança em arquivo Python; alterações em CSS e JavaScript pedem apenas um *hard refresh* no navegador (`Ctrl+Shift+R`).
+Abra **http://127.0.0.1:8000** e entre com a sua conta (ou crie uma). O `--reload` reinicia o servidor a cada mudança em arquivo Python; alterações em CSS e JavaScript pedem apenas um *hard refresh* no navegador (`Ctrl+Shift+R`).
 
 No Windows, o `--reload` é também o que faz o servidor funcionar: sem ele, o uvicorn usa o `ProactorEventLoop`, que o psycopg assíncrono não aceita, e o servidor se recusa a subir com uma mensagem dizendo isso.
 
@@ -200,7 +201,8 @@ src/
 │           ├── portfolio.py Schemas de entrada da carteira e da watchlist
 │           └── output.py    Schemas de saída (normalizam o que a Yahoo devolve)
 ├── server/
-│   ├── app.py               FastAPI: sessão, conversas, SSE, cartões de ticker
+│   ├── app.py               FastAPI: conversas, SSE, cartões de ticker
+│   ├── auth.py              Entrada, saída e criação de conta; a sessão de cada requisição
 │   ├── recorder.py          Grava as mensagens de um turno conforme o grafo as produz
 │   ├── streams.py           Turnos em segundo plano, gravados em Redis Streams retomáveis
 │   └── static/
@@ -208,9 +210,10 @@ src/
 │       ├── styles.css
 │       └── app.js           Cliente SSE, Markdown, histórico, ações e cartões de confirmação
 └── storage/
+    ├── accounts.py          Contas e sessões
     ├── cache.py             Cliente do Redis e cache dos dados de mercado
     ├── database.py          Pool de conexões
-    ├── conversations.py     Consultas sobre usuários, threads e mensagens
+    ├── conversations.py     Consultas sobre threads e mensagens
     ├── history.py           Converte o caminho da thread no histórico do modelo
     ├── memories.py          Memórias: gravação, busca híbrida, substituição e esquecimento
     └── portfolio.py         Livro de operações, preço médio e watchlist
@@ -266,6 +269,16 @@ O agente guarda fatos duradouros sobre o usuário em `agent.memories`, em quatro
 - **Proveniência.** A ferramenta não conhece o id da nossa linha da mensagem que a chamou; o `TurnRecorder`, sim, e é ele quem liga a memória a essa mensagem (`agent.memory_sources`) e registra quem pediu o esquecimento. Uma memória `conversa` aponta para a pergunta e a resposta do turno.
 - **Regeneração.** Quando uma resposta é regerada, a memória `conversa` da versão anterior é substituída pela nova.
 - **Busca híbrida.** `agent.search_memories` combina a busca por embedding e a lexical (`tsvector` em português, com o sufixo do ticker separado) por Reciprocal Rank Fusion: o lexical acerta tickers e nomes exatos; o semântico, paráfrases.
+
+### Autenticação
+
+O usuário entra com e-mail e senha, e tudo o que é dele (conversas, memórias, carteira, watchlist) aponta para `core.users`. Sem sessão, a interface mostra só a tela de entrada, e as rotas respondem `401`.
+
+- **Sessão guardada no servidor.** O cookie `graham_session` (`HttpOnly`, `SameSite=Lax`) leva um token aleatório; `core.sessions` guarda só o SHA-256 dele, e uma cópia do banco não serve para entrar. Sair apaga a sessão, que deixa de valer na hora. Ela dura 30 dias, e as vencidas são apagadas de hora em hora.
+- **Senhas com bcrypt**, custo 12, calculado fora do event loop. Na criação de conta, a senha precisa de 8 caracteres; acima de 72 bytes, o bcrypt a truncaria, e ela é recusada.
+- **Sem revelar quem tem conta no login.** E-mail inexistente e senha errada dão a mesma resposta, no mesmo tempo: um hash é conferido mesmo sem conta.
+- **Força bruta.** Dez senhas erradas para o mesmo e-mail bloqueiam o login dele por 15 minutos (contador no Redis).
+- **Fora do escopo, por decisão:** verificação de e-mail e recuperação de senha.
 
 ### Conversas no banco
 
@@ -360,7 +373,10 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 
 | Método | Rota | Descrição |
 |---|---|---|
-| `POST` | `/api/session` | Cria o usuário anônimo na primeira visita e grava o cookie assinado |
+| `POST` | `/api/auth/signup` | Recebe `{email, password}`, cria a conta e já entra |
+| `POST` | `/api/auth/login` | Recebe `{email, password}` e grava o cookie de sessão |
+| `POST` | `/api/auth/logout` | Apaga a sessão |
+| `GET` | `/api/auth/me` | O e-mail da sessão, ou `401` |
 | `POST` | `/api/chat` | Recebe `{message, thread_id?}` e devolve `text/event-stream`; sem `thread_id`, cria a conversa |
 | `POST` | `/api/regenerate` | Recebe `{thread_id, message_id}` e transmite uma nova resposta para aquele turno |
 | `POST` | `/api/approvals` | Recebe `{thread_id, message_id, decisions}` e transmite a continuação do turno pausado |

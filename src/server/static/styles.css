@@ -107,6 +107,12 @@ button { font: inherit; color: inherit; cursor: pointer; }
   outline: none;
 }
 
+.topbar-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .topbar-mark {
   font-family: var(--serif);
   font-size: 1.05rem;
@@ -114,6 +120,106 @@ button { font: inherit; color: inherit; cursor: pointer; }
   letter-spacing: 0.01em;
   color: var(--ink);
   animation: fade-in 400ms ease both;
+}
+
+/* ───────────────────────────────── Entrada ──────────────────────────────── */
+
+/* Enquanto a sessão é conferida nada aparece; sem sessão, só a entrada. */
+body[data-auth="pending"] .topbar,
+body[data-auth="pending"] .app,
+body[data-auth="pending"] .auth,
+body[data-auth="out"] .topbar,
+body[data-auth="out"] .app,
+body[data-auth="in"] .auth { display: none; }
+
+.auth {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 100vh;
+  max-width: 400px;
+  margin: 0 auto;
+  padding: 40px var(--gutter) 10vh;
+  text-align: center;
+  animation: rise 700ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+.auth .hero-name { font-size: clamp(2.5rem, 11vw, 3.4rem); }
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 40px;
+  text-align: left;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--gray);
+}
+
+.auth-field input {
+  padding: 12px 16px;
+  background: var(--card);
+  border: 1px solid var(--rule-firm);
+  border-radius: var(--r-sm);
+  font-family: var(--sans);
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  color: var(--ink);
+  caret-color: var(--accent);
+  transition: border-color 200ms ease;
+}
+
+.auth-field input:focus {
+  border-color: rgba(20, 17, 12, 0.4);
+  outline: none;
+}
+
+.auth-error {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--accent);
+}
+
+.auth-submit {
+  margin-top: 6px;
+  padding: 12px 16px;
+  background: var(--ink);
+  border: none;
+  border-radius: var(--r-pill);
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--card);
+  transition: background 200ms ease, opacity 200ms ease;
+}
+
+.auth-submit:hover:not(:disabled) { background: #000; }
+.auth-submit:disabled { opacity: 0.55; cursor: default; }
+.auth-submit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.auth-switch {
+  margin: 4px 0 0;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--gray);
+}
+
+.auth-link {
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 /* ──────────────────────────────── Estrutura ─────────────────────────────── */

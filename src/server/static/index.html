@@ -6,7 +6,7 @@
   <title>Graham Agent — Seu corretor de confiança</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body data-auth="pending">
 
   <!-- Cabeçalho flutuante: sobrepõe a conversa, que corre por baixo. -->
   <header class="topbar">
@@ -18,9 +18,35 @@
         </svg>
         Nova conversa
       </button>
-      <span id="topbar-mark" class="topbar-mark" hidden>Graham Agent</span>
+      <div class="topbar-end">
+        <span id="topbar-mark" class="topbar-mark" hidden>Graham Agent</span>
+        <button id="sign-out" class="ghost-button" type="button">Sair</button>
+      </div>
     </div>
   </header>
+
+  <!-- Entrada: sem sessão, é tudo o que aparece. -->
+  <section id="auth" class="auth" aria-label="Entrar">
+    <h1 class="hero-name">Graham Agent</h1>
+    <p class="hero-tagline">Seu corretor de confiança</p>
+
+    <form id="auth-form" class="auth-form" novalidate>
+      <label class="auth-field">
+        <span>E-mail</span>
+        <input id="auth-email" type="email" autocomplete="username" required>
+      </label>
+      <label class="auth-field">
+        <span>Senha</span>
+        <input id="auth-password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="auth-error" class="auth-error" role="alert" hidden></p>
+      <button id="auth-submit" class="auth-submit" type="submit">Entrar</button>
+      <p class="auth-switch">
+        <span id="auth-switch-text">Não tem conta?</span>
+        <button id="auth-switch" class="auth-link" type="button">Criar conta</button>
+      </p>
+    </form>
+  </section>
 
   <div id="app" class="app is-empty">
 

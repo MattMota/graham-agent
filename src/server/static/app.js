@@ -77,6 +77,108 @@ function startNewConversation() {
 
 newChatButton.addEventListener("click", startNewConversation);
 
+/* ──────────────────────────────────── Conta ─────────────────────────────── */
+
+const signOutButton = document.getElementById("sign-out");
+const authForm = document.getElementById("auth-form");
+const authEmail = document.getElementById("auth-email");
+const authPassword = document.getElementById("auth-password");
+const authError = document.getElementById("auth-error");
+const authSubmit = document.getElementById("auth-submit");
+const authSwitch = document.getElementById("auth-switch");
+const authSwitchText = document.getElementById("auth-switch-text");
+
+const AUTH_MODES = {
+  login: {
+    submit: "Entrar", switchText: "Não tem conta?", switchLabel: "Criar conta",
+    autocomplete: "current-password", invalid: "E-mail ou senha incorretos.",
+  },
+  signup: {
+    submit: "Criar conta", switchText: "Já tem conta?", switchLabel: "Entrar",
+    autocomplete: "new-password", invalid: "Use um e-mail válido e uma senha de pelo menos 8 caracteres.",
+  },
+};
+
+let authMode = "login";
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const texts = AUTH_MODES[mode];
+  authSubmit.textContent = texts.submit;
+  authSwitchText.textContent = texts.switchText;
+  authSwitch.textContent = texts.switchLabel;
+  authPassword.autocomplete = texts.autocomplete;
+  authError.hidden = true;
+}
+
+function showAuthError(message) {
+  authError.textContent = message;
+  authError.hidden = false;
+}
+
+function signedIn(email) {
+  document.body.dataset.auth = "in";
+  signOutButton.title = `Sair de ${email}`;
+}
+
+// Sem sessão (nunca entrou, saiu ou ela venceu): só a entrada fica na tela, e
+// a conversa aberta sai junto, porque era da conta anterior.
+function signedOut() {
+  threadId = null;
+  storeThreadId(null);
+  showEmpty();
+  authPassword.value = "";
+  document.body.dataset.auth = "out";
+  authEmail.focus();
+}
+
+authSwitch.addEventListener("click", () => {
+  setAuthMode(authMode === "login" ? "signup" : "login");
+  authEmail.focus();
+});
+
+authForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  authSubmit.disabled = true;
+  authError.hidden = true;
+  try {
+    const response = await fetch(`/api/auth/${authMode}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: authEmail.value, password: authPassword.value }),
+    });
+    let body = {};
+    try {
+      body = await response.json();
+    } catch {
+      /* sem corpo legível */
+    }
+    if (!response.ok) {
+      // 422: o formato não passou na validação; os outros trazem a mensagem.
+      const detail = typeof body.detail === "string" ? body.detail : AUTH_MODES[authMode].invalid;
+      showAuthError(detail);
+      return;
+    }
+    authPassword.value = "";
+    signedIn(body.email);
+    input.focus();
+  } catch {
+    showAuthError("Sem conexão com o servidor.");
+  } finally {
+    authSubmit.disabled = false;
+  }
+});
+
+signOutButton.addEventListener("click", async () => {
+  if (streaming) return;
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+  } finally {
+    setAuthMode("login");
+    signedOut();
+  }
+});
+
 /* ────────────────────────────────── Markdown ────────────────────────────── */
 
 function escapeHtml(text) {
@@ -1550,6 +1652,10 @@ function renderStoredTurn(turn) {
 
 async function openThread(id) {
   const response = await fetch(`/api/threads/${id}`);
+  if (response.status === 401) {
+    signedOut();
+    return;
+  }
   if (!response.ok) {
     // Conversa de outra sessão ou apagada: começa do zero.
     threadId = null;
@@ -1723,6 +1829,10 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
       body: JSON.stringify(payload),
     });
 
+    if (response.status === 401) {
+      signedOut();
+      return;
+    }
     if (!response.ok || !response.body) {
       let detail = null;
       try {
@@ -1862,15 +1972,21 @@ for (const button of document.querySelectorAll(".suggestion")) {
   });
 }
 
-// Antes de qualquer chamada, o servidor precisa do cookie do usuário anônimo.
-// Até lá, o envio fica bloqueado para a primeira pergunta não cair num 401.
+// A tela só aparece depois de conferida a sessão: com ela, a conversa; sem
+// ela, a entrada. Até lá, o envio fica bloqueado.
 async function boot() {
   setStreaming(true);
   try {
-    await fetch("/api/session", { method: "POST" });
+    const response = await fetch("/api/auth/me");
+    if (!response.ok) {
+      signedOut();
+      return;
+    }
+    signedIn((await response.json()).email);
     if (threadId) await openThread(threadId);
   } catch {
-    // Sem servidor, a tela continua de pé; o erro aparece ao perguntar.
+    // Sem servidor, fica a entrada; o erro aparece ao tentar entrar.
+    signedOut();
   } finally {
     setStreaming(false);
     input.focus();

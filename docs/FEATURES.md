@@ -20,7 +20,6 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Regerar resposta | ✅ Existente | `POST /api/regenerate` | A nova resposta é irmã da anterior, que continua gravada fora do caminho |
 | Bifurcar conversa | ✅ Existente | `POST /api/threads/{id}/fork` | Sem copiar mensagens: o fork sobe pelos `parent_id` até a origem |
 | Resposta interrompida | ✅ Existente | `src/server/recorder.py` | Só quando o servidor para no meio do turno: o texto parcial é salvo e marcado, e a saída oferecida é regerar |
-| Usuário anônimo | ✅ Existente | `POST /api/session` | Cookie assinado com HMAC; a autenticação entra depois em `core` |
 | Memória de longo prazo | ✅ Existente | `src/agent/memory/`, `agent.memories` | Perfil, preferências, interesses e episódios guardados pelo agente; substituição automática; esquecer sem apagar |
 | Perfil sempre no contexto | ✅ Existente | `AgentContext.profile` | Perfil e preferências entram em toda resposta |
 | Conversas reencontráveis | ✅ Existente | `buscar_memorias`, `ver_memoria` | Cada turno concluído vira memória `conversa`, achada por busca híbrida |
@@ -65,3 +64,14 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Confirmação das operações | ✅ Existente | Nó `approval` do grafo, `POST /api/approvals` | Um cartão por operação, com valores editáveis exceto o ativo e listas com busca para moeda e operação; o agente sugere a cotação atual para operações de hoje |
 | Cache com Redis | ✅ Existente | `src/storage/cache.py` | Notícias por 1h, buscas por 24h, cotações sem cache; as conversas ficam no Postgres, de propósito |
 | Streams retomáveis | ✅ Existente | `src/server/streams.py` | O turno roda em segundo plano; recarregar a página ou perder a conexão não interrompe a resposta |
+
+## Plataforma
+
+Features interdependentes, na ordem de implementação: cada uma depende das anteriores.
+
+| Feature | Estado | Onde | Observações |
+|---|---|---|---|
+| 1. Autenticação | ✅ Existente | `src/server/auth.py`, `core.sessions` | E-mail e senha, login obrigatório; conversas, memórias, carteira e watchlist ficam na conta. O uso anônimo anterior virou a conta `user@email.com`. Sem verificação de e-mail nem recuperação de senha, por decisão |
+| 2. Servidor MCP | ⏳ Pendente | | Depende de 1. As ferramentas do agente saem para um servidor MCP autenticado: um agente próprio se conecta com uma credencial, e o Graham Agent o consome com a autenticação da plataforma |
+| 2.a. Resources do MCP | ⏳ Pendente | | Depende de 2. Metadados, contratos de linguagem e afins, servidos para que os agentes esclareçam seu contexto |
+| 2.b. Skills do MCP | ⏳ Pendente | | Depende de 2. Comportamentos reusáveis, servidos para que os agentes façam análises e sigam fluxos repetíveis |

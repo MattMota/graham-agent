@@ -1,4 +1,4 @@
-"""Consultas sobre usuários, threads e mensagens (schemas `core` e `agent`)."""
+"""Consultas sobre threads e mensagens (schema `agent`)."""
 
 from datetime import timedelta
 from typing import Any, Literal
@@ -28,18 +28,6 @@ async def _all(pool: AsyncConnectionPool, query: str, params: tuple = ()) -> lis
 
 def _json(value: Any) -> Jsonb | None:
     return None if value is None else Jsonb(value)
-
-
-# Usuários ──────────────────────────────────────────────────────────────────
-
-
-async def create_user(pool: AsyncConnectionPool) -> UUID:
-    row = await _one(pool, "INSERT INTO core.users DEFAULT VALUES RETURNING id")
-    return row["id"]
-
-
-async def user_exists(pool: AsyncConnectionPool, user_id: UUID) -> bool:
-    return await _one(pool, "SELECT 1 FROM core.users WHERE id = %s", (user_id,)) is not None
 
 
 # Threads ───────────────────────────────────────────────────────────────────
