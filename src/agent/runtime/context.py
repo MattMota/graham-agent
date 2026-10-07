@@ -16,3 +16,6 @@ class AgentContext:
 
     user_id: UUID
     pool: AsyncConnectionPool
+    # Perfil e preferências do usuário, carregados no início do turno: entram em
+    # toda chamada ao modelo, sem depender de ele decidir buscá-los.
+    profile: tuple[str, ...] = ()

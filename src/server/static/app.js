@@ -176,12 +176,27 @@ const TOOL_NAMES = {
   cotacao_atual_acao: "cotação atual",
   proventos: "proventos",
   desempenho: "desempenho",
+  guardar_memoria: "memória",
+  buscar_memorias: "busca na memória",
+  ver_memoria: "memória",
+  esquecer_memoria: "memória",
   noticias_acao: "notícias recentes",
   buscar_ticker_por_empresa: "busca de ticker",
   buscar_tickers_por_industria: "triagem por setor",
   resumo_mercado: "resumo de mercado",
   ver_carteira: "carteira",
   ver_watchlist: "watchlist",
+};
+
+// Ferramentas que não são consultas: o aviso diz o que aconteceu.
+const WORKING_LABELS = {
+  guardar_memoria: "guardando na memória",
+  esquecer_memoria: "esquecendo memória",
+};
+
+const DONE_LABELS = {
+  guardar_memoria: "memória · guardada",
+  esquecer_memoria: "memória · esquecida",
 };
 
 function toolLabel(name) {
@@ -784,7 +799,7 @@ function toolBlock(toolName, input) {
   toggle.setAttribute("aria-expanded", "false");
 
   const text = document.createElement("span");
-  text.textContent = `consultando ${toolLabel(toolName)}${toolSubject(input)}`;
+  text.textContent = WORKING_LABELS[toolName] || `consultando ${toolLabel(toolName)}${toolSubject(input)}`;
 
   const dot = document.createElement("span");
   dot.className = "dot";
@@ -819,7 +834,7 @@ function toolBlock(toolName, input) {
       bar.classList.remove("is-working");
       dot.remove();
       // "consulta concluída" evita concordar em gênero com o nome da ferramenta.
-      text.textContent = `${toolLabel(toolName)} · consulta concluída`;
+      text.textContent = DONE_LABELS[toolName] || `${toolLabel(toolName)} · consulta concluída`;
       result.set(output);
       const view = TOOL_VIEWS[toolName]?.(output, artifact);
       if (view) detail.prepend(view);

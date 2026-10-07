@@ -21,6 +21,10 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Bifurcar conversa | ✅ Existente | `POST /api/threads/{id}/fork` | Sem copiar mensagens: o fork sobe pelos `parent_id` até a origem |
 | Resposta interrompida | ✅ Existente | `src/server/recorder.py` | Só quando o servidor para no meio do turno: o texto parcial é salvo e marcado, e a saída oferecida é regerar |
 | Usuário anônimo | ✅ Existente | `POST /api/session` | Cookie assinado com HMAC; a autenticação entra depois em `core` |
+| Memória de longo prazo | ✅ Existente | `src/agent/memory/`, `agent.memories` | Perfil, preferências, interesses e episódios guardados pelo agente; substituição automática; esquecer sem apagar |
+| Perfil sempre no contexto | ✅ Existente | `AgentContext.profile` | Perfil e preferências entram em toda resposta |
+| Conversas reencontráveis | ✅ Existente | `buscar_memorias`, `ver_memoria` | Cada turno concluído vira memória `conversa`, achada por busca híbrida |
+| Painel de memórias | ⏳ Pendente | | Listar e esquecer memórias pela interface |
 | Checkpoints do LangGraph | ✅ Existente | `src/server/app.py` | Uma thread do LangGraph por turno, guardada por um dia para inspeção |
 | Sugestões de perguntas na tela inicial | ✅ Existente | `src/server/static/index.html` | |
 

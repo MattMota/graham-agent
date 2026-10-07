@@ -30,6 +30,10 @@ A resposta chega **token a token**, com os dados aparecendo conforme são buscad
 | `remover_watchlist` ✋ | `ticker_name`, `operation`, `target_price?` | A entrada removida |
 | `proventos` | `ticker_name?`, `months` | Pagamentos pela data ex, total em 12 meses, dividend yield e próxima data ex; sem ticker, quanto a carteira recebeu |
 | `desempenho` | `tickers`, `period` ou `start_date`, `compare_index` | Retorno com e sem proventos, anualizado, volatilidade, maior queda, máxima e mínima, contra o Ibovespa ou o S&P 500 |
+| `guardar_memoria` | `fact`, `category` | Grava um fato duradouro sobre o usuário; embedding e substituição seguem em segundo plano |
+| `buscar_memorias` | `search_fact` | Fatos e trechos de conversas anteriores relacionados, por busca híbrida |
+| `ver_memoria` | `memory_id` | O conteúdo completo; numa conversa, as mensagens originais do turno |
+| `esquecer_memoria` | `memory_id` | Marca a memória como esquecida, sem apagá-la |
 
 ✋ Pede a confirmação do usuário antes de rodar (veja [Confirmação das operações](#confirmação-das-operações)).
 
@@ -111,7 +115,22 @@ O modelo e seus parâmetros ficam em `src/agent/config/settings.toml`, separados
 model = "deepseek/deepseek-v4-flash"
 temperature = 0.2
 timeout = 60
+
+[embedding]
+model = "perplexity/pplx-embed-v1-0.6b"
+timeout = 20
+
+[decision]
+model = "typesafe-ai/jev"
+timeout = 15
+
+[memory]
+profile_limit = 20
+supersede_candidates = 5
+supersede_probability = 0.5
 ```
+
+O embedding e o modelo de decisão usam o mesmo gateway e a mesma chave do modelo de chat; o Jev responde pelo endpoint `/evaluate`, não pela API de chat. O `pplx-embed-v1-0.6b` devolve vetores INT8 de 1.024 dimensões, que a coluna `halfvec(1024)` guarda sem perda; trocar de modelo exige uma coluna com a dimensão nova e recalcular os embeddings (a coluna `embedding_model` diz quais estão desatualizados).
 
 O modelo escolhido precisa suportar **tool calling** e **streaming** — sem os dois, o agente não consegue consultar dados nem responder progressivamente.
 
@@ -154,22 +173,29 @@ db/
 src/
 ├── agent/
 │   ├── config/
-│   │   ├── model.py         Instancia o LLM e vincula as ferramentas
-│   │   └── settings.toml    Modelo, temperatura, timeout
+│   │   ├── model.py         Vincula as ferramentas ao modelo
+│   │   ├── settings.py      Lê as configurações e cria o modelo puro, sem ferramentas
+│   │   └── settings.toml    Modelo, embedding, decisão e memória
+│   ├── decision.py          Perguntas tipadas ao modelo de decisão (Jev)
 │   ├── instructions/
 │   │   ├── __init__.py      Carrega o prompt como SystemMessage
 │   │   └── system_prompt.md Instruções do agente
+│   ├── memory/
+│   │   ├── embeddings.py    Embeddings pelo gateway do provedor
+│   │   └── processing.py    Embedding, substituição, indexação de turnos e backfill
 │   ├── runtime/
-│   │   ├── context.py       O que as ferramentas recebem do servidor: usuário e pool
+│   │   ├── context.py       O que as ferramentas recebem do servidor: usuário, pool e perfil
 │   │   └── state_graph.py   O grafo, o nó de aprovação e a função que o compila
 │   └── tools/
 │       ├── analysis.py      Proventos (de um ativo ou da carteira) e desempenho
 │       ├── definition.py    As ferramentas de mercado e o registro automático
+│       ├── memory.py        As ferramentas de memória
 │       ├── portfolio.py     As ferramentas de carteira e watchlist
 │       ├── registry.py      Junta as ferramentas e as que pedem confirmação
 │       └── schemas/
 │           ├── analysis.py  Schemas de entrada de proventos e desempenho
 │           ├── input.py     Schemas de entrada (validam o que o modelo envia)
+│           ├── memory.py    Schemas de entrada da memória
 │           ├── portfolio.py Schemas de entrada da carteira e da watchlist
 │           └── output.py    Schemas de saída (normalizam o que a Yahoo devolve)
 ├── server/
@@ -181,10 +207,11 @@ src/
 │       ├── styles.css
 │       └── app.js           Cliente SSE, Markdown, histórico, ações e cartões de confirmação
 └── storage/
-    ├── cache.py             Cache no Redis: dados de mercado e caminho das conversas
+    ├── cache.py             Cliente do Redis e cache dos dados de mercado
     ├── database.py          Pool de conexões
     ├── conversations.py     Consultas sobre usuários, threads e mensagens
     ├── history.py           Converte o caminho da thread no histórico do modelo
+    ├── memories.py          Memórias: gravação, busca híbrida, substituição e esquecimento
     └── portfolio.py         Livro de operações, preço médio e watchlist
 ```
 
@@ -226,6 +253,18 @@ A carteira é um **livro de operações** (`core.portfolio_trades`): cada compra
 Na interface, a consulta à carteira aparece como as outras consultas, no aviso recolhível; ao abrir, as posições, os totais por moeda e as operações vêm em tabela, acima do JSON. Cada ferramenta pode ganhar uma vista assim em `TOOL_VIEWS`, no `app.js`.
 
 A watchlist (`core.watchlist`) guarda o ativo, a operação pretendida (`compra`, `venda` ou `short`), o preço alvo e, opcionalmente, a quantidade, que transforma o acompanhamento num plano. O mesmo ativo pode aparecer mais de uma vez, com operações ou alvos diferentes.
+
+### Memória de longo prazo
+
+O agente guarda fatos duradouros sobre o usuário em `agent.memories`, em quatro categorias que ele mesmo escolhe: `perfil` (risco, horizonte, objetivos), `preferencia` (como quer as respostas), `interesse` (setores e temas, sem preço alvo, que é da watchlist) e `episodio` (acontecimentos, com a data). Uma quinta, `conversa`, é do sistema: cada turno concluído vira memória, com o título da conversa, a pergunta, as consultas feitas e a resposta final, para ser reencontrado depois.
+
+- **Perfil e preferências estão sempre no contexto.** No início de cada turno, os ativos entram num bloco "O que você sabe sobre o usuário" do system prompt, via `AgentContext.profile`. O resto (interesses, episódios, conversas) é buscado sob demanda, com `buscar_memorias`.
+- **Gravação imediata, resto em segundo plano.** `guardar_memoria` grava na hora e responde. O embedding e a checagem de substituição rodam depois, em `src/agent/memory/processing.py`; se o servidor cair no meio, a subida seguinte completa os embeddings que faltaram. A busca lexical já encontra a memória antes disso.
+- **Substituição automática.** Ao guardar, o embedding ordena as 5 memórias ativas mais parecidas com a nova, de qualquer categoria menos `conversa`. Elas vão juntas ao modelo de decisão [Jev](https://vercel.com/ai-gateway/models/jev) (`src/agent/decision.py`), numa requisição só, com uma pergunta booleana por candidata: a memória nova torna esta dispensável? As que passam de 0,5 de probabilidade ganham `superseded_by_id` e saem da busca e do contexto. O cosseno sozinho não decidiria: na calibração, "conservador → arrojado" ficou em 0,61 e "bancos x energia", em 0,60, enquanto o Jev deu 0,72–0,94 aos pares do mesmo assunto e 0,03–0,08 aos diferentes, em cerca de 0,4 s. A pergunta é "dispensável", e não "mesmo assunto", para que um fato composto não perca a parte que continua valendo; o agente também é instruído a guardar um fato por memória. Se o Jev não responder, nada é substituído.
+- **Esquecer não apaga.** `esquecer_memoria` marca `is_forgotten`, com data e a mensagem que pediu. Substituída quer dizer que o fato mudou; esquecida, que a memória estava errada ou o usuário pediu. Só a segunda é um sinal de erro de quem gerou a memória, e serve de rótulo para melhorar a geração no futuro.
+- **Proveniência.** A ferramenta não conhece o id da nossa linha da mensagem que a chamou; o `TurnRecorder`, sim, e é ele quem liga a memória a essa mensagem (`agent.memory_sources`) e registra quem pediu o esquecimento. Uma memória `conversa` aponta para a pergunta e a resposta do turno.
+- **Regeneração.** Quando uma resposta é regerada, a memória `conversa` da versão anterior é substituída pela nova.
+- **Busca híbrida.** `agent.search_memories` combina a busca por embedding e a lexical (`tsvector` em português, com o sufixo do ticker separado) por Reciprocal Rank Fusion: o lexical acerta tickers e nomes exatos; o semântico, paráfrases.
 
 ### Conversas no banco
 

@@ -29,7 +29,8 @@ from src.agent.tools.definition import get_current_stock_price
 from src.agent.tools.registry import APPROVAL_REQUIRED, TOOLS
 from src.server import streams
 from src.server.recorder import TurnRecorder
-from src.storage import cache, conversations
+from src.agent.memory import processing as memory_processing
+from src.storage import cache, conversations, memories
 from src.storage.database import create_pool
 from src.storage.history import split_turns, to_langchain
 
@@ -97,6 +98,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("%d mensagem(ns) em geração marcada(s) como interrompida(s)", interrupted)
         if recovered := await streams.recover(redis):
             logger.info("%d stream(s) do processo anterior encerrado(s)", recovered)
+        # Memórias que ficaram sem embedding: em segundo plano, sem atrasar a subida.
+        memory_processing.spawn(memory_processing.backfill(pool))
 
         app.state.pool = pool
         app.state.redis = redis
@@ -114,6 +117,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             for task in app.state.turns:
                 task.cancel()
             await asyncio.gather(*app.state.turns, return_exceptions=True)
+            # O que sobrar depois disso é embedding, que o backfill completa.
+            await memory_processing.drain(timeout=10)
             await cache.close()
 
 
@@ -389,7 +394,10 @@ async def _run_turn(
         "configurable": {"thread_id": recorder.graph_thread_id},
         "metadata": {"graham_thread_id": str(thread["id"])},
     }
-    context = AgentContext(user_id=thread["user_id"], pool=pool)
+    profile = await memories.profile(pool, thread["user_id"], memory_processing.profile_limit())
+    context = AgentContext(
+        user_id=thread["user_id"], pool=pool, profile=tuple(row["content"] for row in profile)
+    )
 
     # Mesmo cuidado do CLI: o modelo emite espaços em branco antes de anunciar
     # uma ferramenta, e eles não devem aparecer na tela.
@@ -496,6 +504,10 @@ async def _run_turn(
             return
 
         settled = True
+        # O turno concluído vira memória `conversa`, para ser reencontrado depois.
+        memory_processing.spawn(
+            memory_processing.index_turn(pool, thread["user_id"], thread["title"], recorder.last)
+        )
         yield _sse("done", {"message_id": str(recorder.last), "state": "completed"})
 
     except Exception as error:  # noqa: BLE001 - o erro precisa chegar à interface

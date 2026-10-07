@@ -1,12 +1,13 @@
 """Grava no banco as mensagens de um turno conforme o grafo as produz."""
 
+import json
 from uuid import UUID
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from psycopg_pool import AsyncConnectionPool
 
 from src.agent.config.model import SETTINGS
-from src.storage import conversations
+from src.storage import conversations, memories
 
 MODEL = SETTINGS["llm"]["model"]
 MODEL_PARAMS = {"temperature": SETTINGS["llm"]["temperature"]}
@@ -111,6 +112,26 @@ class TurnRecorder:
                 content=message.text,
                 payload=payload,
             )
+            if message.status != "error" and not cancelled:
+                await self._link_memory(message)
+
+    async def _link_memory(self, message: ToolMessage) -> None:
+        """Liga a memória à mensagem do agente que chamou a ferramenta.
+
+        A ferramenta não conhece o id da nossa linha dessa mensagem; o gravador,
+        sim. A origem diz de que conversa um fato saiu, e quem pediu para
+        esquecê-lo, o que serve de sinal para melhorar a geração de memórias.
+        """
+        if message.name not in ("guardar_memoria", "esquecer_memoria") or self.calls_id is None:
+            return
+        try:
+            memory_id = UUID(json.loads(message.text)["memory_id"])
+        except (ValueError, KeyError, TypeError):
+            return
+        if message.name == "guardar_memoria":
+            await memories.add_sources(self.pool, memory_id, [self.calls_id])
+        else:
+            await memories.set_forgotten_by(self.pool, memory_id, self.calls_id)
 
     async def pause(self, requests: list[dict]) -> UUID:
         """Marca a pausa à espera de confirmação e devolve a mensagem que a marca.

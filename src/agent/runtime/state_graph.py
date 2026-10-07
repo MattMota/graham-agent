@@ -27,11 +27,17 @@ tool_node = ToolNode(
     handle_tool_errors=True,
 )
 
-async def call_model(state: AgentState) -> dict:
+async def call_model(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
     # The model has no clock: without today's date it cannot fill in the date
     # of a trade made "hoje".
-    system = SystemMessage(f"{SYSTEM_PROMPT.content}\n\nHoje é {date.today():%Y-%m-%d}.")
-    response = await LLM.ainvoke([system, *state["messages"]])
+    parts = [SYSTEM_PROMPT.content, f"Hoje é {date.today():%Y-%m-%d}."]
+    # The user's profile and preferences ride along in every call, so answers
+    # take them into account even when the model does not think to search.
+    profile = getattr(runtime.context, "profile", ())
+    if profile:
+        facts = "\n".join(f"- {fact}" for fact in profile)
+        parts.append(f"# O que você sabe sobre o usuário\n\n{facts}")
+    response = await LLM.ainvoke([SystemMessage("\n\n".join(parts)), *state["messages"]])
     # adiciona a resposta do modelo no estado (messages)
     return {"messages": [response]}
 

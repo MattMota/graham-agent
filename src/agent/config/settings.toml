@@ -2,3 +2,21 @@
 model = "deepseek/deepseek-v4-flash"
 temperature = 0.2
 timeout = 60
+
+[embedding]
+# Vetores INT8 de 1.024 dimensões, comparados por cosseno (agent.memories.embedding).
+model = "perplexity/pplx-embed-v1-0.6b"
+timeout = 20
+
+[decision]
+# Modelo de decisão (respostas tipadas com probabilidade), pelo /v1/evaluate do gateway.
+model = "typesafe-ai/jev"
+timeout = 15
+
+[memory]
+# Perfil e preferências que entram em toda resposta, os mais recentes primeiro.
+profile_limit = 20
+# Memórias mais parecidas com uma nova que o modelo de decisão julga, e a
+# probabilidade a partir da qual "a nova torna a antiga dispensável" a substitui.
+supersede_candidates = 5
+supersede_probability = 0.5
