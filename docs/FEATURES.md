@@ -51,7 +51,8 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Feature | Estado | Onde | Observações |
 |---|---|---|---|
 | Cartões de cotação dos tickers citados | ✅ Existente | `src/server/app.py` | Até 8 por resposta, sem repetir consultas já feitas |
-| Detalhe das consultas feitas | ✅ Existente | `src/server/static/app.js` | Argumentos enviados e JSON devolvido, recolhíveis |
+| Detalhe das consultas feitas | ✅ Existente | `src/server/static/app.js` | Argumentos enviados e JSON devolvido, recolhíveis. Várias consultas seguidas viram um grupo que mostra só a em andamento e a contagem |
+| Análises fora das consultas | ✅ Existente | `toolRun` em `src/server/static/app.js` | Carteira, proventos e o gráfico de desempenho aparecem entre as consultas e o texto da resposta; mais de uma no mesmo grupo, cada uma recolhida sob um título |
 | Markdown nas respostas | ✅ Existente | `src/server/static/app.js` | Renderizador próprio; todo conteúdo é escapado antes de virar HTML |
 | REPL de linha de comando | ✅ Existente | `main.py` | |
 | Verificação de saúde | ✅ Existente | `GET /api/health` | |

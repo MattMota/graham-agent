@@ -781,6 +781,70 @@ body[data-auth="in"] .auth { display: none; }
 
 .tool-toggle[aria-expanded="true"] .tool-chevron { transform: rotate(180deg); }
 
+/* Várias consultas seguidas: um aviso só, com a consulta em andamento e a
+   contagem; aberto, a lista delas num quadro. */
+.tool-group-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--gray-light);
+}
+
+.tool-group-count:empty { display: none; }
+
+.tool-group-detail {
+  margin: -6px 0 18px;
+  padding: 2px 18px;
+  background: rgba(251, 249, 245, 0.55);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  animation: rise 260ms ease both;
+}
+
+.tool-group-detail .tool-note { margin: 12px 0; }
+.tool-group-detail .tool-detail { margin-bottom: 14px; }
+
+/* As vistas estruturadas, entre as consultas e o texto da resposta. */
+.tool-views {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 22px;
+}
+
+.tool-views:empty { display: none; }
+
+.view-fold {
+  background: var(--card);
+  border: 1px solid var(--rule-firm);
+  border-radius: var(--r-md);
+}
+
+.view-fold-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  list-style: none;
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+  border-radius: var(--r-md);
+  transition: color 180ms ease;
+}
+
+.view-fold-summary::-webkit-details-marker { display: none; }
+.view-fold-summary:hover,
+.view-fold-summary:focus-visible { color: var(--ink); outline: none; }
+.view-fold[open] .view-fold-summary .tool-chevron { transform: rotate(180deg); }
+
+/* Dentro do quadro recolhível, a vista dispensa a própria moldura. */
+.view-fold > .tool-view {
+  padding-top: 0;
+  background: none;
+  border: none;
+}
+
 /* Argumentos e retorno, lado a lado, em caixas de código. */
 .tool-detail {
   display: grid;

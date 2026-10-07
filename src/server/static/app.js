@@ -1241,7 +1241,7 @@ function toolBlock(toolName, input) {
   toggle.setAttribute("aria-expanded", "false");
 
   const text = document.createElement("span");
-  text.textContent = WORKING_LABELS[toolName] || `consultando ${toolLabel(toolName)}${toolSubject(input)}`;
+  text.textContent = workingLabel(toolName, input);
 
   const dot = document.createElement("span");
   dot.className = "dot";
@@ -1272,19 +1272,169 @@ function toolBlock(toolName, input) {
 
   return {
     root,
+    // Devolve a vista estruturada do resultado, se a ferramenta tiver uma.
     finish(output, artifact = null) {
       bar.classList.remove("is-working");
       dot.remove();
       // "consulta concluída" evita concordar em gênero com o nome da ferramenta.
       text.textContent = DONE_LABELS[toolName] || `${toolLabel(toolName)} · consulta concluída`;
       result.set(output);
-      const view = TOOL_VIEWS[toolName]?.(output, artifact);
-      if (view) detail.prepend(view);
+      return TOOL_VIEWS[toolName]?.(output, artifact) || null;
     },
     abort() {
       bar.classList.remove("is-working");
       dot.remove();
       text.textContent = `${toolLabel(toolName)} · consulta interrompida`;
+    },
+  };
+}
+
+/* ─────────────────────────── Rodada de consultas ────────────────────────── */
+
+// Consultas seguidas, sem texto entre elas, formam uma rodada. Com uma só, ela
+// aparece como sempre. A partir da segunda, viram um grupo expansível que, no
+// cabeçalho, mostra só a consulta em andamento e a contagem.
+//
+// As vistas estruturadas (a carteira, os proventos, o gráfico de desempenho)
+// não ficam dentro do detalhe da consulta: vêm logo depois da rodada, antes do
+// texto. Uma só aparece aberta; mais de uma, cada uma recolhida sob um título.
+
+function capitalize(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function workingLabel(name, input) {
+  return WORKING_LABELS[name] || `consultando ${toolLabel(name)}${toolSubject(input)}`;
+}
+
+// O que distingue, recolhidas, duas vistas da mesma ferramenta: o período.
+// Dois desempenhos dos mesmos ativos, um de três meses e outro de três
+// semanas, teriam o mesmo título sem ele.
+const VIEW_PERIODS = {
+  desempenho: (output) => {
+    const spans = new Set((output?.series || []).map((item) => `${isoDate(item.from)} a ${isoDate(item.to)}`));
+    return spans.size === 1 ? [...spans][0] : null;
+  },
+  proventos: (output) => (output?.months ? `últimos ${output.months} meses` : null),
+};
+
+function viewTitle(name, input, output) {
+  const period = VIEW_PERIODS[name]?.(output);
+  return `${capitalize(toolLabel(name))}${toolSubject(input)}${period ? ` · ${period}` : ""}`;
+}
+
+function viewFold(title, view) {
+  const fold = document.createElement("details");
+  fold.className = "view-fold";
+  const summary = document.createElement("summary");
+  summary.className = "view-fold-summary";
+  const label = document.createElement("span");
+  label.textContent = title;
+  const chevron = document.createElement("span");
+  chevron.className = "tool-chevron";
+  chevron.innerHTML = CHEVRON;
+  summary.append(label, chevron);
+  fold.append(summary, view);
+  return fold;
+}
+
+function toolRun() {
+  const root = document.createElement("div");
+  root.className = "tool-run";
+  const slot = document.createElement("div");
+  const viewsBox = document.createElement("div");
+  viewsBox.className = "tool-views";
+  root.append(slot, viewsBox);
+
+  const entries = [];
+  const views = [];
+  let group = null;
+
+  const buildGroup = () => {
+    const bar = document.createElement("div");
+    bar.className = "tool-note tool-group-note";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "tool-toggle";
+    toggle.setAttribute("aria-expanded", "false");
+
+    const text = document.createElement("span");
+    const count = document.createElement("span");
+    count.className = "tool-group-count";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const chevron = document.createElement("span");
+    chevron.className = "tool-chevron";
+    chevron.innerHTML = CHEVRON;
+    toggle.append(text, count, dot, chevron);
+    bar.append(toggle);
+
+    const detail = document.createElement("div");
+    detail.className = "tool-group-detail";
+    detail.hidden = true;
+    toggle.addEventListener("click", () => {
+      const opening = toggle.getAttribute("aria-expanded") !== "true";
+      toggle.setAttribute("aria-expanded", String(opening));
+      detail.hidden = !opening;
+    });
+
+    for (const entry of entries) detail.append(entry.note.root);
+    slot.replaceChildren(bar, detail);
+    group = { bar, text, count, dot, detail };
+  };
+
+  const refresh = () => {
+    if (!group) return;
+    const total = entries.length;
+    const working = entries.filter((entry) => entry.state === "working");
+    const finished = total - working.length;
+    group.bar.classList.toggle("is-working", working.length > 0);
+    group.dot.hidden = working.length === 0;
+    if (working.length) {
+      // A mais recente das que ainda rodam: é a que o agente acabou de pedir.
+      const current = working[working.length - 1];
+      group.text.textContent = workingLabel(current.name, current.input);
+      group.count.textContent = `${finished} de ${total}`;
+    } else {
+      const aborted = entries.some((entry) => entry.state === "aborted");
+      group.text.textContent = `${total} consultas ${aborted ? "· interrompidas" : "concluídas"}`;
+      group.count.textContent = "";
+    }
+  };
+
+  const placeViews = () => {
+    if (views.length === 1) viewsBox.replaceChildren(views[0].el);
+    else viewsBox.replaceChildren(...views.map((item) => viewFold(item.title, item.el)));
+  };
+
+  return {
+    root,
+    add(name, input) {
+      const note = toolBlock(name, input);
+      const entry = { name, input, note, state: "working" };
+      entries.push(entry);
+      if (entries.length === 1) slot.append(note.root);
+      else if (!group) buildGroup();
+      else group.detail.append(note.root);
+      refresh();
+
+      return {
+        finish(output, artifact = null) {
+          const view = note.finish(output, artifact);
+          entry.state = "done";
+          if (view) {
+            views.push({ el: view, title: viewTitle(name, input, output) });
+            placeViews();
+          }
+          refresh();
+        },
+        abort() {
+          note.abort();
+          entry.state = "aborted";
+          refresh();
+        },
+      };
     },
   };
 }
@@ -1966,17 +2116,23 @@ function renderStoredTurn(turn) {
   }
 
   const body = addTurn("agent", "Graham Agent");
+  let run = null;
   for (const block of turn.blocks) {
     if (block.type === "text") {
+      run = null;
       const text = document.createElement("div");
       text.className = "answer-block";
       text.innerHTML = renderMarkdown(block.text);
       body.append(text);
     } else if (block.type === "approval") {
+      run = null;
       body.append(approvalGroup(body, block.message_id, block.requests, block));
     } else {
-      const note = toolBlock(block.name, block.input);
-      body.append(note.root);
+      if (!run) {
+        run = toolRun();
+        body.append(run.root);
+      }
+      const note = run.add(block.name, block.input);
       if (block.done) note.finish(block.output, block.artifact);
       else note.abort();
     }
@@ -2055,6 +2211,9 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
   let block = null;
   let blockText = "";
 
+  // A rodada de consultas em curso: termina quando o agente volta a falar.
+  let run = null;
+
   // O agente dispara várias ferramentas de uma vez, então cada aviso pendente
   // é guardado por nome — a lista cobre o caso da mesma ferramenta repetida.
   const pendingNotes = new Map();
@@ -2072,6 +2231,7 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
 
   const openBlock = () => {
     if (!block) {
+      run = null;
       block = document.createElement("div");
       block.className = "answer-block caret";
       blockText = "";
@@ -2106,8 +2266,11 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
       // O que já foi dito fica fechado acima do aviso.
       closeBlock();
 
-      const note = toolBlock(data.name, data.input);
-      body.append(note.root);
+      if (!run) {
+        run = toolRun();
+        body.append(run.root);
+      }
+      const note = run.add(data.name, data.input);
 
       const queue = pendingNotes.get(data.name) || [];
       queue.push(note);
@@ -2119,6 +2282,7 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
 
     } else if (name === "approval") {
       closeBlock();
+      run = null;
       body.append(approvalGroup(body, data.message_id, data.requests));
       scrollToEnd();
 
