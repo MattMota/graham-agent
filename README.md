@@ -102,7 +102,7 @@ docker compose ps           # espere o status "healthy"
 uv run db/migrate.py        # aplica as migrations pendentes
 ```
 
-As migrations são arquivos SQL numerados em `db/migrations/`, aplicados em ordem e registrados em `public.schema_migrations`. A `0006_auth.sql` transforma o usuário anônimo de antes da autenticação na conta `user@email.com`, senha `graham`, com todos os dados dele; num banco novo nenhuma conta é criada, e a primeira se cria na tela de entrada. As tabelas dos checkpoints ficam de fora: o `AsyncPostgresSaver` as cria no schema `langgraph` quando o servidor sobe.
+As migrations são arquivos SQL numerados em `db/migrations/`, aplicados em ordem e registrados em `public.schema_migrations`. A `0006_auth.sql` transforma o usuário anônimo de antes da autenticação na conta `user@email.com`, senha `graham`, com todos os dados dele; num banco novo nenhuma conta é criada, e a primeira se cria na tela de entrada. As tabelas dos checkpoints ficam de fora: o `AsyncPostgresSaver` as cria no schema `langgraph` quando o servidor sobe. Com alguma migration pendente, o servidor se recusa a subir e diz qual falta, em vez de falhar no meio do uso.
 
 O Redis não guarda nada em disco: tudo nele é cache ou stream com TTL. Reiniciá-lo só custa refazer consultas à Yahoo e encerrar os turnos que estavam em andamento. Para espiá-lo, `docker compose exec redis redis-cli` abre um terminal (`KEYS graham:*` lista as chaves).
 

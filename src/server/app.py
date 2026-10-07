@@ -31,7 +31,7 @@ from src.server.auth import require_user
 from src.server.recorder import TurnRecorder
 from src.agent.memory import processing as memory_processing
 from src.storage import accounts, cache, conversations, memories
-from src.storage.database import create_pool
+from src.storage.database import create_pool, pending_migrations
 from src.storage.history import split_turns, to_langchain
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -92,6 +92,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     async with create_pool() as pool:
         saver = AsyncPostgresSaver(pool)
+        # Com o banco atrás do código, as falhas só apareceriam no meio do uso
+        # (uma coluna ou função que não existe); melhor não subir.
+        if pending := await pending_migrations(pool):
+            raise RuntimeError(
+                f"Migrations pendentes: {', '.join(pending)}. Aplique com: uv run db/migrate.py"
+            )
+
         await saver.setup()
 
         interrupted = await conversations.interrupt_streaming(pool)
