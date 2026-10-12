@@ -178,6 +178,8 @@ compose.yaml                 Postgres 18 com pgvector, para desenvolvimento
 db/
 ├── migrate.py               Aplica as migrations pendentes
 └── migrations/              Schemas core, agent e langgraph, em SQL
+scripts/
+└── mcp_inspector.py         Abre o MCP Inspector conectado ao /mcp, com uma chave temporária
 src/
 ├── agent/
 │   ├── config/
@@ -310,6 +312,18 @@ As ferramentas de mercado, análise, carteira e watchlist vivem num servidor [MC
 - **A memória fica de fora.** Guardar, buscar, ver e esquecer memórias continuam ferramentas locais do Graham: a memória é dele, e expô-la deixaria outro agente ler e alterar o que ele sabe do usuário.
 
 No REPL, sem usuário, as ferramentas MCP rodam em processo: as de mercado funcionam, e as de carteira avisam que precisam de uma conta.
+
+#### Inspecionar o servidor
+
+Com o servidor no ar, o [MCP Inspector](https://github.com/modelcontextprotocol/inspector) abre já conectado ao `/mcp`, em nome de uma conta:
+
+```bash
+uv run scripts/mcp_inspector.py --email user@email.com             # interface web, só leitura
+uv run scripts/mcp_inspector.py --email user@email.com --escrita   # permite as ferramentas que gravam
+uv run scripts/mcp_inspector.py --email user@email.com -- --cli --method tools/list
+```
+
+O script cria uma chave temporária para a conta (só leitura, a não ser com `--escrita`), passa-a ao Inspector no cabeçalho `Authorization` e a revoga quando ele fecha; se o script cair antes, ela vence em 12 horas. O que vier depois de `--` vai direto ao Inspector. Precisa do Node (`npx`). Sem a chave, o Inspector tentaria o fluxo OAuth, que o servidor ainda não oferece.
 
 ### Conversas no banco
 
