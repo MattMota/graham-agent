@@ -1,6 +1,7 @@
 """Contexto de uma execução do grafo: o que as ferramentas precisam e o modelo não vê."""
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from psycopg_pool import AsyncConnectionPool
@@ -19,3 +20,6 @@ class AgentContext:
     # Perfil e preferências do usuário, carregados no início do turno: entram em
     # toda chamada ao modelo, sem depender de ele decidir buscá-los.
     profile: tuple[str, ...] = ()
+    # A conexão com o servidor MCP aberta para o turno, com o token do usuário
+    # (um `mcp.Client`). Sem ela, as ferramentas MCP rodam em processo, sem usuário.
+    mcp: Any = None

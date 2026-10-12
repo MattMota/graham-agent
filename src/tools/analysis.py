@@ -2,21 +2,15 @@
 
 import asyncio
 import calendar
-import inspect
 import math
 import statistics
-import sys
 from collections import defaultdict
 from datetime import date
 from typing import Any, Optional
 
-from langchain_core.tools import BaseTool, ToolException, tool
-from langgraph.prebuilt import ToolRuntime
 
-from src.agent.runtime.context import AgentContext
-from src.agent.tools import definition as market
-from src.agent.tools.portfolio import _context as require_context
-from src.agent.tools.schemas.analysis import IncomeInput, PerformanceInput
+from src.tools import market
+from src.tools.context import ToolContext, ToolFailure
 from src.storage import portfolio as store
 from src.storage.cache import cached
 
@@ -100,10 +94,10 @@ def _received(ticker: str, trades: list[dict], payments: list[dict]) -> list[dic
     return rows
 
 
-async def _asset_income(runtime: ToolRuntime, ticker: str, since: date, months: int) -> dict[str, Any]:
+async def _asset_income(context: ToolContext, ticker: str, since: date, months: int) -> dict[str, Any]:
     data, quote = await asyncio.gather(
         asyncio.to_thread(_dividend_data, ticker),
-        asyncio.to_thread(market._safe, lambda: market.get_current_stock_price.func(ticker)),
+        asyncio.to_thread(market._safe, lambda: market.get_current_stock_price(ticker)),
     )
     payments = data["payments"]
     window = [p for p in payments if p["ex_date"] >= since.isoformat()]
@@ -129,8 +123,7 @@ async def _asset_income(runtime: ToolRuntime, ticker: str, since: date, months: 
     }
 
     # Se o usuário tem ou teve o ativo, quanto ele recebeu na mesma janela.
-    context = getattr(runtime, "context", None)
-    if isinstance(context, AgentContext):
+    if context.has_user:
         trades = await store.list_trades(context.pool, context.user_id, ticker)
         rows = _received(ticker, trades, window) if trades else []
         if rows:
@@ -141,8 +134,9 @@ async def _asset_income(runtime: ToolRuntime, ticker: str, since: date, months: 
     return output
 
 
-async def _portfolio_income(context: AgentContext, since: date, months: int) -> dict[str, Any]:
-    trades = await store.list_trades(context.pool, context.user_id)
+async def _portfolio_income(context: ToolContext, since: date, months: int) -> dict[str, Any]:
+    pool, user_id = context.require_user()
+    trades = await store.list_trades(pool, user_id)
     if not trades:
         return {"months": months, "assets": [], "totals": [], "upcoming": [], "note": "A carteira não tem operações."}
 
@@ -189,23 +183,13 @@ async def _portfolio_income(context: AgentContext, since: date, months: int) -> 
     return output
 
 
-@tool(
-    "proventos",
-    description=(
-        "Mostra os proventos (dividendos, JCP, rendimentos de FIIs) de um ativo: pagamentos "
-        "na janela pedida, total dos últimos 12 meses, dividend yield e a próxima data ex; se "
-        "o usuário tem o ativo, também quanto ele recebeu. Sem ticker, calcula quanto a "
-        "carteira do usuário recebeu, pela quantidade que ele tinha em cada data ex."
-    ),
-    args_schema=IncomeInput,
-)
 async def income(
-    runtime: ToolRuntime, ticker_name: Optional[str] = None, months: int = 12
+    context: ToolContext, ticker_name: Optional[str] = None, months: int = 12
 ) -> dict[str, Any]:
     since = _months_ago(months)
     if ticker_name:
-        return await _asset_income(runtime, ticker_name, since, months)
-    return await _portfolio_income(require_context(runtime), since, months)
+        return await _asset_income(context, ticker_name, since, months)
+    return await _portfolio_income(context, since, months)
 
 
 # Desempenho ────────────────────────────────────────────────────────────────
@@ -286,20 +270,8 @@ def _chart_points(history: dict[str, Any]) -> list[list[Any]]:
     return [[dates[i], round((adj[i] / adj[0] - 1) * 100, 3)] for i in indexes]
 
 
-@tool(
-    "desempenho",
-    description=(
-        "Compara o desempenho de até 4 ativos num período ou desde uma data (como a da "
-        "compra): retorno com e sem proventos, retorno anualizado, volatilidade, maior queda, "
-        "máxima e mínima, contra o Ibovespa ou o S&P 500. A interface mostra um gráfico. Use "
-        "quando o usuário perguntar como um ativo evoluiu ou se foi melhor que outro."
-    ),
-    args_schema=PerformanceInput,
-    # O modelo recebe as métricas; a série de pontos vai à parte, só para o
-    # gráfico da interface, sem gastar tokens.
-    response_format="content_and_artifact",
-)
 async def performance(
+    context: ToolContext,
     tickers: list[str],
     period: str = "1y",
     start_date: Optional[date] = None,
@@ -329,7 +301,7 @@ async def performance(
         points.append({"ticker": symbol, "label": label, "is_index": symbol == index, "points": _chart_points(history)})
 
     if not any(not item["is_index"] for item in series):
-        raise ToolException(
+        raise ToolFailure(
             f"Sem histórico de preços para {', '.join(symbols)} nesse período. Ações brasileiras "
             "usam o sufixo '.SA'; busque o ticker pelo nome da empresa se preciso."
         )
@@ -342,12 +314,3 @@ async def performance(
     if failed:
         content["unavailable"] = failed
     return content, {"series": points}
-
-
-TOOLS: list[BaseTool] = [
-    obj
-    for _, obj in inspect.getmembers(sys.modules[__name__], lambda o: isinstance(o, BaseTool))
-]
-# A ToolException volta ao modelo como resposta da ferramenta, marcada como erro.
-for _tool in TOOLS:
-    _tool.handle_tool_error = True

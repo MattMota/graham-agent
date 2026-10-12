@@ -1,7 +1,11 @@
 from datetime import date
 from typing import TypedDict, Annotated, Any
 
+import json
+
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -11,23 +15,64 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command, Send, interrupt
 from pydantic import ValidationError
 
-from src.agent.config.model import LLM
+from src.agent.config.model import bind_model
 from src.agent.instructions import SYSTEM_PROMPT
 from src.agent.runtime.context import AgentContext
-from src.agent.tools.registry import APPROVAL_REQUIRED, TOOLS
+from src.agent.tools.registry import APPROVAL_REQUIRED
+from src.tools.catalog import BY_NAME
 
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-tool_node = ToolNode(
-    tools=TOOLS,
-    # Without this, only argument validation errors reach the model; any other
-    # exception raised by a tool (an unknown ticker, say) would abort the turn.
-    handle_tool_errors=True,
-)
+def _with_edits(message: ToolMessage, edits: dict[str, Any]) -> ToolMessage:
+    """Adds to a write's result what the user corrected on the confirmation card.
 
-async def call_model(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
+    Without it, the model sees a stored value different from what the user said
+    in the conversation and concludes it made a mistake. The result stays in
+    the history, so this holds for the following turns as well.
+    """
+    if message.status == "error":
+        return message
+    try:
+        output = json.loads(message.content)
+    except (TypeError, ValueError):
+        return message
+    if not isinstance(output, dict):
+        return message
+    output["user_edits"] = edits
+    output["note"] = (
+        "O usuário corrigiu estes valores no cartão de confirmação antes de gravar; "
+        "eles valem mais do que o que foi dito na conversa."
+    )
+    return message.model_copy(update={"content": json.dumps(output, ensure_ascii=False)})
+
+
+def tools_node(tools: list[BaseTool]):
+    node = ToolNode(
+        tools=tools,
+        # Without this, only argument validation errors reach the model; any
+        # other exception raised by a tool (an unknown ticker, say) would abort
+        # the turn.
+        handle_tool_errors=True,
+    )
+
+    async def run_tools(task: dict[str, Any], config: RunnableConfig) -> Any:
+        output = await node.ainvoke(task, config)
+        # The edits ride along in the state sent with each approved call; the
+        # tool itself, now behind MCP, never sees them.
+        edits = (task.get("state") or {}).get("approval_edits") if isinstance(task, dict) else None
+        if edits and isinstance(output, dict):
+            output["messages"] = [
+                _with_edits(message, edits) if isinstance(message, ToolMessage) else message
+                for message in output["messages"]
+            ]
+        return output
+
+    return run_tools
+
+
+async def _respond(state: AgentState, runtime: Runtime[AgentContext], model: Runnable) -> dict:
     # The model has no clock: without today's date it cannot fill in the date
     # of a trade made "hoje".
     parts = [SYSTEM_PROMPT.content, f"Hoje é {date.today():%Y-%m-%d}."]
@@ -37,7 +82,7 @@ async def call_model(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
     if profile:
         facts = "\n".join(f"- {fact}" for fact in profile)
         parts.append(f"# O que você sabe sobre o usuário\n\n{facts}")
-    response = await LLM.ainvoke([SystemMessage("\n\n".join(parts)), *state["messages"]])
+    response = await model.ainvoke([SystemMessage("\n\n".join(parts)), *state["messages"]])
     # adiciona a resposta do modelo no estado (messages)
     return {"messages": [response]}
 
@@ -50,9 +95,6 @@ def route_after_model(state: AgentState) -> str:
     if any(call["name"] in APPROVAL_REQUIRED for call in message.tool_calls):
         return "approval"
     return "tools"
-
-
-TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 
 
 def _to_tools(call: dict[str, Any], state: AgentState, edits: dict[str, Any] | None = None) -> Send:
@@ -71,7 +113,7 @@ def _user_edits(name: str, proposed: dict[str, Any], approved: dict[str, Any]) -
     wrote in lower case does not count as an edit.
     """
     try:
-        proposed = TOOLS_BY_NAME[name].args_schema.model_validate(proposed).model_dump(mode="json")
+        proposed = BY_NAME[name].input_model.model_validate(proposed).model_dump(mode="json")
     except ValidationError:
         pass
     return {
@@ -134,25 +176,31 @@ async def request_approval(state: AgentState, runtime: Runtime[AgentContext]) ->
     )
 
 
-GRAPH_BUILDER = (
-    StateGraph(AgentState, context_schema=AgentContext)
+def agent_node(model: Runnable):
+    async def call_model(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
+        return await _respond(state, runtime, model)
 
-    # Nodes
-    .add_node("agent", call_model) # Basic agent response
-    .add_node("approval", request_approval, destinations=("tools", "agent")) # Human in the loop
-    .add_node("tools", tool_node) # Tool calling
-
-    # Edges
-    .add_edge(START, "agent") # Startup
-    .add_conditional_edges("agent", route_after_model, ["approval", "tools", END]) # Writes need approval first
-    .add_edge("tools", "agent") # After the tool is called, always go back to the agent node
-)
+    return call_model
 
 
-def compile_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
-    """Compila o grafo com o checkpointer de quem vai executá-lo.
+def compile_graph(checkpointer: BaseCheckpointSaver, tools: list[BaseTool]) -> CompiledStateGraph:
+    """Compila o grafo com o checkpointer de quem vai executá-lo e as ferramentas.
 
     O servidor usa o Postgres; o REPL, a memória do processo. A pausa para
     aprovação depende do checkpointer: é nele que o grafo espera a resposta.
+    As ferramentas vêm do servidor MCP, listado na subida, e da memória local.
     """
-    return GRAPH_BUILDER.compile(checkpointer=checkpointer)
+    builder = (
+        StateGraph(AgentState, context_schema=AgentContext)
+
+        # Nodes
+        .add_node("agent", agent_node(bind_model(tools))) # Basic agent response
+        .add_node("approval", request_approval, destinations=("tools", "agent")) # Human in the loop
+        .add_node("tools", tools_node(tools)) # Tool calling
+
+        # Edges
+        .add_edge(START, "agent") # Startup
+        .add_conditional_edges("agent", route_after_model, ["approval", "tools", END]) # Writes need approval first
+        .add_edge("tools", "agent") # After the tool is called, always go back to the agent node
+    )
+    return builder.compile(checkpointer=checkpointer)

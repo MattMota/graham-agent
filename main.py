@@ -2,20 +2,21 @@
 import asyncio
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from src.agent.runtime.state_graph import AgentState, compile_graph
+from langgraph.graph.state import CompiledStateGraph
 
-# O REPL não grava no banco: a conversa vive na memória do processo.
-GRAPH = compile_graph(InMemorySaver())
+from src.agent.runtime.state_graph import AgentState, compile_graph
+from src.agent.tools.registry import load_tools
+
 CONFIG = {"configurable": {"thread_id": "cli"}}
 
 
-async def responder(pergunta: str) -> None:
+async def responder(graph: CompiledStateGraph, pergunta: str) -> None:
     entrada: AgentState = {"messages": [HumanMessage(pergunta)]}
     # O modelo costuma emitir espaços em branco antes de anunciar um tool call;
     # só começamos a imprimir quando chega conteúdo de verdade.
     comecou = False
 
-    async for event in GRAPH.astream_events(entrada, config=CONFIG, version="v2"):
+    async for event in graph.astream_events(entrada, config=CONFIG, version="v2"):
         kind = event["event"]
 
         if kind == "on_chat_model_stream":
@@ -36,6 +37,9 @@ async def responder(pergunta: str) -> None:
 
 
 async def main() -> None:
+    # O REPL não grava no banco: a conversa vive na memória do processo. As
+    # ferramentas MCP rodam em processo, sem usuário: mercado sim, carteira não.
+    graph = compile_graph(InMemorySaver(), await load_tools())
     print("Graham Agent — digite 'sair' para encerrar.")
 
     while True:
@@ -46,7 +50,7 @@ async def main() -> None:
             continue
 
         print("\nagente: ", end="", flush=True)
-        await responder(pergunta)
+        await responder(graph, pergunta)
         print()
 
 

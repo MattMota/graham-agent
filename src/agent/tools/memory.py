@@ -15,7 +15,7 @@ from langgraph.prebuilt import ToolRuntime
 
 from src.agent.memory import processing
 from src.agent.memory.embeddings import embed, to_halfvec
-from src.agent.tools.portfolio import _context as require_context
+from src.agent.runtime.context import AgentContext
 from src.agent.tools.schemas.memory import MemoryIdInput, RecallInput, RememberInput
 from src.storage import conversations, memories
 
@@ -26,6 +26,13 @@ PREVIEW_CHARS = 400
 
 # Retorno das ferramentas abreviado no ver_memoria de uma conversa.
 TOOL_OUTPUT_CHARS = 300
+
+
+def require_context(runtime: ToolRuntime | None) -> AgentContext:
+    context = getattr(runtime, "context", None)
+    if not isinstance(context, AgentContext):
+        raise ToolException("A memória só está disponível na interface web.")
+    return context
 
 
 def _preview(text: str, limit: int = PREVIEW_CHARS) -> str:

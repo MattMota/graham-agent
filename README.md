@@ -16,6 +16,8 @@ A resposta chega **token a token**, com os dados aparecendo conforme são buscad
 
 ### Ferramentas disponíveis ao agente
 
+As de mercado, análise, carteira e watchlist ficam no [servidor MCP](#servidor-mcp) do Graham, que outros agentes também podem usar; as de memória são só do Graham.
+
 | Ferramenta | Argumentos | O que retorna |
 |---|---|---|
 | `cotacao_atual_acao` | `ticker_name` | Preço, variação do dia, abertura, máxima/mínima, volume, valor de mercado, faixa de 52 semanas e médias móveis |
@@ -38,7 +40,7 @@ A resposta chega **token a token**, com os dados aparecendo conforme são buscad
 
 ✋ Pede a confirmação do usuário antes de rodar (veja [Confirmação das operações](#confirmação-das-operações)).
 
-As ferramentas são registradas automaticamente: `TOOLS`, em `src/agent/tools/definition.py` (mercado) e em `src/agent/tools/portfolio.py` (carteira e watchlist), varre o próprio módulo com `inspect` e recolhe todo objeto `BaseTool`; `src/agent/tools/registry.py` junta as duas listas. Para adicionar uma ferramenta, basta declará-la com `@tool` num desses arquivos. Se ela gravar dados, acrescente o nome a `APPROVAL_REQUIRED`, em `portfolio.py`.
+Para adicionar uma ferramenta ao MCP, escreva a função em `src/tools/` (recebe um `ToolContext` e os argumentos), o modelo de entrada no módulo do mesmo domínio em `src/tools/schemas/` e uma entrada em `CATALOG`, em `src/tools/catalog.py`, com o nome, a descrição e o escopo (`READ` ou `WRITE`). O servidor a publica e o Graham passa a usá-la na subida seguinte; se ela gravar dados (`WRITE`), o grafo pede a confirmação do usuário antes. As de memória continuam como ferramentas LangChain, em `src/agent/tools/memory.py`.
 
 ---
 
@@ -67,6 +69,7 @@ Declaradas em `pyproject.toml` e resolvidas pelo `uv`:
 | `redis` | Cache dos dados de mercado e streams retomáveis |
 | `bcrypt` | Hash das senhas |
 | `httpx` | Chamadas ao modelo de decisão e à busca de notícias |
+| `mcp` | SDK oficial do Model Context Protocol: o servidor MCP e o cliente que o Graham usa |
 | `dotenv` | Carrega as credenciais do `.env` |
 
 ---
@@ -88,11 +91,14 @@ MODEL_PROVIDER_BASE_URL=https://ai-gateway.vercel.sh/v1
 MODEL_PROVIDER_API_KEY=sua-chave-aqui
 DATABASE_URL=postgresql://graham:graham@127.0.0.1:5432/graham?connect_timeout=10
 REDIS_URL=redis://127.0.0.1:6379/0
+PUBLIC_URL=http://127.0.0.1:8000
 ```
 
 `MODEL_PROVIDER_BASE_URL` precisa apontar para um endpoint compatível com a API de *chat completions* da OpenAI. Sem ela, o `ChatOpenAI` cai no padrão (`api.openai.com`) e a chave do seu provedor é rejeitada com `401`.
 
 `DATABASE_URL` aponta para o Postgres do `compose.yaml`. Use `127.0.0.1`, não `localhost`: no Windows, `localhost` resolve primeiro para o IPv6 (`::1`), onde a porta não está publicada, e a conexão assíncrona do psycopg fica presa nesse endereço até o tempo limite em vez de passar para o IPv4. O `connect_timeout` faz qualquer falha de conexão aparecer em 10 segundos, em vez de travar.
+
+`PUBLIC_URL` é o endereço pelo qual o servidor é alcançado, sem barra no fim: dele saem a URL do servidor MCP (`{PUBLIC_URL}/mcp`), os metadados de autorização e os hosts aceitos. O padrão é `http://127.0.0.1:8000`; mude-o se rodar em outra porta ou atrás de um domínio. O Graham chama o próprio MCP por esse endereço; para usar outro caminho interno (atrás de um proxy, por exemplo), defina `MCP_INTERNAL_URL`.
 
 ### Banco de dados e Redis
 
@@ -186,23 +192,31 @@ src/
 │   │   ├── embeddings.py    Embeddings pelo gateway do provedor
 │   │   └── processing.py    Embedding, substituição, indexação de turnos e backfill
 │   ├── runtime/
-│   │   ├── context.py       O que as ferramentas recebem do servidor: usuário, pool e perfil
+│   │   ├── context.py       O que as ferramentas recebem do servidor: usuário, pool, perfil e a conexão MCP
 │   │   └── state_graph.py   O grafo, o nó de aprovação e a função que o compila
 │   └── tools/
-│       ├── analysis.py      Proventos (de um ativo ou da carteira) e desempenho
-│       ├── definition.py    As ferramentas de mercado e o registro automático
-│       ├── memory.py        As ferramentas de memória
-│       ├── portfolio.py     As ferramentas de carteira e watchlist
-│       ├── registry.py      Junta as ferramentas e as que pedem confirmação
+│       ├── memory.py        As ferramentas de memória, locais
+│       ├── registry.py      As ferramentas do MCP e as locais, e as que pedem confirmação
+│       ├── remote.py        As ferramentas do MCP vistas como ferramentas LangChain; a conexão do turno
 │       └── schemas/
-│           ├── analysis.py  Schemas de entrada de proventos e desempenho
-│           ├── input.py     Schemas de entrada (validam o que o modelo envia)
-│           ├── memory.py    Schemas de entrada da memória
-│           ├── portfolio.py Schemas de entrada da carteira e da watchlist
-│           └── output.py    Schemas de saída (normalizam o que a Yahoo devolve)
+│           └── memory.py    Schemas de entrada da memória
+├── mcp_server/
+│   └── server.py            Servidor MCP: verificador de tokens e registro do catálogo
+├── tools/                   As ferramentas publicadas pelo MCP, sem LangChain
+│   ├── analysis.py          Proventos (de um ativo ou da carteira) e desempenho
+│   ├── catalog.py           Nome, descrição, entrada, função e escopo de cada uma
+│   ├── context.py           ToolContext (usuário e pool) e ToolFailure
+│   ├── market.py            Cotação, notícias e buscas no yfinance e no Google News
+│   ├── portfolio.py         Carteira e watchlist
+│   └── schemas/             Um módulo por domínio, como as ferramentas
+│       ├── analysis.py      Entrada de proventos e desempenho
+│       ├── common.py        Tipos usados por mais de um domínio (o ticker)
+│       ├── market.py        Entrada e saída das ferramentas de mercado (a saída normaliza o que a Yahoo devolve)
+│       └── portfolio.py     Entrada da carteira e da watchlist
 ├── server/
-│   ├── app.py               FastAPI: conversas, SSE, cartões de ticker
+│   ├── app.py               FastAPI: conversas, SSE, cartões de ticker; monta o MCP em /mcp
 │   ├── auth.py              Entrada, saída e criação de conta; a sessão de cada requisição
+│   ├── keys.py              Chaves de acesso ao MCP: criar, listar e revogar
 │   ├── recorder.py          Grava as mensagens de um turno conforme o grafo as produz
 │   ├── streams.py           Turnos em segundo plano, gravados em Redis Streams retomáveis
 │   └── static/
@@ -216,7 +230,8 @@ src/
     ├── conversations.py     Consultas sobre threads e mensagens
     ├── history.py           Converte o caminho da thread no histórico do modelo
     ├── memories.py          Memórias: gravação, busca híbrida, substituição e esquecimento
-    └── portfolio.py         Livro de operações, preço médio e watchlist
+    ├── portfolio.py         Livro de operações, preço médio e watchlist
+    └── tokens.py            Tokens de acesso ao MCP: chaves e tokens internos
 ```
 
 ### O grafo do agente
@@ -279,6 +294,20 @@ O usuário entra com e-mail e senha, e tudo o que é dele (conversas, memórias,
 - **Sem revelar quem tem conta no login.** E-mail inexistente e senha errada dão a mesma resposta, no mesmo tempo: um hash é conferido mesmo sem conta.
 - **Força bruta.** Dez senhas erradas para o mesmo e-mail bloqueiam o login dele por 15 minutos (contador no Redis).
 - **Fora do escopo, por decisão:** verificação de e-mail e recuperação de senha.
+
+### Servidor MCP
+
+As ferramentas de mercado, análise, carteira e watchlist vivem num servidor [MCP](https://modelcontextprotocol.io), em `{PUBLIC_URL}/mcp` (Streamable HTTP), montado na mesma app do servidor web. O próprio Graham o consome, e outros agentes podem se conectar a ele com uma chave de acesso.
+
+- **Chaves de acesso.** Em *Conectar agentes*, no rodapé da aba de conversas, o usuário cria uma chave com nome, vê o valor uma única vez (com um exemplo de configuração para o Claude Code) e pode revogá-la. A chave nasce só de leitura; gravar na carteira e na watchlist exige marcar a permissão ao criá-la. O agente envia `Authorization: Bearer graham_...`; o banco guarda só o SHA-256 (`core.access_tokens`).
+- **Escopos.** `graham:leitura` em toda chave, `graham:escrita` nas que podem gravar. As quatro ferramentas que gravam vêm anotadas como destrutivas, para o cliente pedir a confirmação dele; sem a permissão, a chamada é recusada com uma explicação.
+- **O Graham pelo MCP.** A cada turno, o servidor emite um token interno do usuário (curto, apagado no fim do turno) e abre uma conexão MCP com ele, numa tarefa própria. O cookie da sessão nunca vai ao MCP. As operações que gravam continuam passando antes pelo cartão de confirmação; as correções feitas nele são anexadas ao resultado do lado do Graham.
+- **Definições na subida.** O Graham lê nome, descrição e esquema de entrada das ferramentas do próprio servidor, em processo, ao subir (o HTTP ainda não atende nesse momento), e liga o modelo a elas ao compilar o grafo.
+- **O gráfico à parte.** O `desempenho` devolve as métricas no texto e a série do gráfico em `structuredContent`, que vira o artefato da mensagem: a interface desenha, o modelo não gasta tokens com ela.
+- **Autorização.** Sem token, `/mcp` responde `401` com `WWW-Authenticate` apontando para os metadados do recurso protegido (RFC 9728, em `/.well-known/oauth-protected-resource/mcp`). Por enquanto só há chaves de acesso; o fluxo OAuth 2.1 completo, exigido por conectores como os do claude.ai, é uma etapa seguinte.
+- **A memória fica de fora.** Guardar, buscar, ver e esquecer memórias continuam ferramentas locais do Graham: a memória é dele, e expô-la deixaria outro agente ler e alterar o que ele sabe do usuário.
+
+No REPL, sem usuário, as ferramentas MCP rodam em processo: as de mercado funcionam, e as de carteira avisam que precisam de uma conta.
 
 ### Conversas no banco
 
@@ -390,6 +419,11 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 | `DELETE` | `/api/threads/{id}` | Apaga a conversa; `409` se houver resposta em andamento |
 | `GET` | `/api/threads/{id}` | O caminho ativo da conversa, agrupado em turnos |
 | `GET` | `/api/streams/{id}` | Reconecta a um turno: os eventos depois de `?after=`, ou todos |
+| `GET` | `/api/keys` | As chaves de acesso ativas (sem o valor) e a URL do servidor MCP |
+| `POST` | `/api/keys` | Recebe `{name, can_write}` e cria uma chave; o valor vem só nesta resposta |
+| `DELETE` | `/api/keys/{id}` | Revoga a chave |
+| `POST` | `/mcp` | Servidor MCP (Streamable HTTP), com `Authorization: Bearer` |
+| `GET` | `/.well-known/oauth-protected-resource/mcp` | Metadados do recurso protegido (RFC 9728) |
 | `GET` | `/api/health` | Confirma que o grafo compilou e lista seus nós |
 | `GET` | `/` | A interface |
 | `GET` | `/static/*` | CSS e JavaScript |

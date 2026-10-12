@@ -45,6 +45,15 @@
       <ul id="thread-list" class="thread-list"></ul>
       <p id="thread-list-empty" class="thread-list-empty" hidden></p>
     </nav>
+    <div class="sidebar-footer">
+      <button id="open-keys" class="sidebar-link" type="button">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="7.5" cy="15.5" r="3.5"/><path d="M10 13l8.5-8.5M15.5 7.5l2 2M13.5 9.5l2 2"/>
+        </svg>
+        Conectar agentes
+      </button>
+    </div>
   </aside>
   <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 
@@ -104,6 +113,59 @@
     </div>
 
   </div>
+
+  <!-- Chaves de acesso ao servidor MCP, para usar as ferramentas em outro agente. -->
+  <dialog id="keys-dialog" class="keys-dialog" aria-labelledby="keys-title">
+    <div class="keys-head">
+      <h2 id="keys-title" class="keys-title">Conectar agentes</h2>
+      <button id="keys-close" class="icon-button" type="button" aria-label="Fechar">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p class="keys-intro">
+      Use as ferramentas do Graham em outro agente, pelo servidor MCP: dados de mercado,
+      notícias, análises, carteira e watchlist. A memória do Graham não sai daqui.
+    </p>
+
+    <div class="keys-field">
+      <span class="keys-label">Servidor MCP</span>
+      <div class="keys-copy">
+        <code id="mcp-url"></code>
+        <button class="copy-button" type="button" data-copy="mcp-url">Copiar</button>
+      </div>
+    </div>
+
+    <form id="key-form" class="key-form">
+      <span class="keys-label">Nova chave</span>
+      <input id="key-name" type="text" maxlength="60" autocomplete="off"
+             placeholder="Para quem é, como 'Claude Code'" aria-label="Nome da chave">
+      <label class="key-write">
+        <input id="key-write" type="checkbox">
+        Pode registrar operações na carteira e alterar a watchlist
+      </label>
+      <button class="auth-submit" type="submit">Criar chave</button>
+    </form>
+
+    <div id="key-created" class="key-created" hidden>
+      <p class="key-warning">Copie a chave agora: ela não será mostrada de novo.</p>
+      <div class="keys-copy">
+        <code id="key-token"></code>
+        <button class="copy-button" type="button" data-copy="key-token">Copiar</button>
+      </div>
+      <p class="keys-label">No Claude Code, por exemplo:</p>
+      <div class="keys-copy">
+        <code id="key-example" class="key-example"></code>
+        <button class="copy-button" type="button" data-copy="key-example">Copiar</button>
+      </div>
+    </div>
+
+    <p id="keys-error" class="auth-error" role="alert" hidden></p>
+
+    <span class="keys-label">Chaves ativas</span>
+    <ul id="key-list" class="key-list"></ul>
+    <p id="key-list-empty" class="key-list-empty" hidden>Nenhuma chave ativa.</p>
+  </dialog>
 
   <script src="/static/app.js"></script>
 </body>

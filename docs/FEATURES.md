@@ -62,9 +62,9 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 
 | Feature | Estado | Onde | Observações |
 |---|---|---|---|
-| Carteira | ✅ Existente | `src/agent/tools/portfolio.py`, `core.portfolio_trades` | Livro de operações com preço médio, no preço e na moeda em que o usuário pagou; valor atual convertido pelo câmbio do dia; em tabela na interface |
+| Carteira | ✅ Existente | `src/tools/portfolio.py`, `core.portfolio_trades` | Livro de operações com preço médio, no preço e na moeda em que o usuário pagou; valor atual convertido pelo câmbio do dia; em tabela na interface |
 | Proventos da carteira | ✅ Existente | `proventos` sem ticker | Pela quantidade que o usuário tinha em cada data ex |
-| Watchlist | ✅ Existente | `src/agent/tools/portfolio.py`, `core.watchlist` | Operação pretendida, preço alvo e quantidade opcional; distância até o alvo |
+| Watchlist | ✅ Existente | `src/tools/portfolio.py`, `core.watchlist` | Operação pretendida, preço alvo e quantidade opcional; distância até o alvo |
 | Confirmação das operações | ✅ Existente | Nó `approval` do grafo, `POST /api/approvals` | Um cartão por operação, com valores editáveis exceto o ativo e listas com busca para moeda e operação; o agente sugere a cotação atual para operações de hoje |
 | Cache com Redis | ✅ Existente | `src/storage/cache.py` | Notícias por 1h, buscas por 24h, cotações sem cache; as conversas ficam no Postgres, de propósito |
 | Streams retomáveis | ✅ Existente | `src/server/streams.py` | O turno roda em segundo plano; recarregar a página ou perder a conexão não interrompe a resposta |
@@ -76,8 +76,9 @@ Features interdependentes, na ordem de implementação: cada uma depende das ant
 | Feature | Estado | Onde | Observações |
 |---|---|---|---|
 | 1. Autenticação | ✅ Existente | `src/server/auth.py`, `core.sessions` | E-mail e senha, login obrigatório; conversas, memórias, carteira e watchlist ficam na conta. O uso anônimo anterior virou a conta `user@email.com`. Sem verificação de e-mail nem recuperação de senha, por decisão |
-| 2. Servidor MCP | ⏳ Pendente | | Depende de 1. As ferramentas do agente saem para um servidor MCP autenticado: um agente próprio se conecta com uma credencial, e o Graham Agent o consome com a autenticação da plataforma |
+| 2. Servidor MCP | ✅ Existente | `src/mcp_server/`, `src/tools/`, `core.access_tokens` | Mercado, análise, carteira e watchlist em `/mcp`. Agentes externos entram com chaves de acesso criadas em *Conectar agentes* (só leitura, ou com escrita se marcado); o Graham consome com um token interno por turno, e a confirmação das operações continua no grafo. A memória fica só no Graham |
 | 2.a. Resources do MCP | ⏳ Pendente | | Depende de 2. Metadados, contratos de linguagem e afins, servidos para que os agentes esclareçam seu contexto |
 | 2.b. Skills do MCP | ⏳ Pendente | | Depende de 2. Comportamentos reusáveis, servidos para que os agentes façam análises e sigam fluxos repetíveis |
 | 2.c. Protocolo AG-UI | ⏳ Pendente | | Depende de 2. Expõe o agente a outras interfaces (o MCP expõe as ferramentas a outros agentes). Os eventos SSE atuais correspondem quase um a um aos do AG-UI; a confirmação vira a interrupção do protocolo, e cartões de ticker e gráfico, eventos `Custom` |
 | 2.d. Visualizações em A2UI | ⏳ Pendente | | Depende de 2 e 2.c, e espera a primeira versão estável do A2UI (a 1.0; hoje a estável é a 0.9.1). Carteira, proventos, desempenho e confirmações descritos pelas próprias ferramentas, não pelo modelo, com um catálogo do Graham para o gráfico e os cartões de ticker |
+| 2.e. OAuth 2.1 no MCP | ⏳ Pendente | | Depende de 2. Servidor de autorização (login, consentimento, PKCE, registro de clientes) para conectores que só falam OAuth, como os do claude.ai e do ChatGPT; as chaves de acesso continuam |

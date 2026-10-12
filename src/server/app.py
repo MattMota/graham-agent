@@ -9,7 +9,8 @@ import re
 import time
 import unicodedata
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -25,15 +26,18 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from src.agent.runtime.context import AgentContext
 from src.agent.runtime.state_graph import AgentState, compile_graph
-from src.agent.tools.definition import get_current_stock_price
-from src.agent.tools.registry import APPROVAL_REQUIRED, TOOLS
-from src.server import auth, streams
+from src.agent.tools import remote as mcp_tools
+from src.agent.tools.registry import APPROVAL_REQUIRED, load_tools
+from src.mcp_server import server as mcp_server
+from src.server import auth, keys, streams
 from src.server.auth import require_user
 from src.server.recorder import TurnRecorder
 from src.agent.memory import processing as memory_processing
-from src.storage import accounts, cache, conversations, memories
+from src.storage import accounts, cache, conversations, memories, tokens
 from src.storage.database import create_pool, pending_migrations
 from src.storage.history import split_turns, to_langchain
+from src.tools import market
+from src.tools.catalog import BY_NAME
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -62,14 +66,15 @@ logger = logging.getLogger("uvicorn.error")
 
 
 async def _purge_expired(pool, saver: AsyncPostgresSaver) -> None:
-    """Apaga, de hora em hora, os checkpoints que passaram da retenção e as sessões vencidas."""
+    """Apaga, de hora em hora, os checkpoints que passaram da retenção e as sessões e tokens vencidos."""
     while True:
         try:
             for graph_thread_id in await conversations.expired_graph_threads(pool, CHECKPOINT_RETENTION):
                 await saver.adelete_thread(graph_thread_id)
             await accounts.purge_sessions(pool)
+            await tokens.purge(pool)
         except Exception:  # noqa: BLE001 - uma falha na limpeza não pode derrubar o servidor
-            logger.exception("Falha ao apagar checkpoints ou sessões vencidas")
+            logger.exception("Falha ao apagar checkpoints, sessões ou tokens vencidos")
         await asyncio.sleep(PURGE_INTERVAL.total_seconds())
 
 
@@ -112,13 +117,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         app.state.pool = pool
         app.state.redis = redis
-        app.state.graph = compile_graph(saver)
+        # O servidor MCP, montado nesta mesma app, usa o pool daqui. O grafo
+        # conhece as ferramentas pela listagem dele.
+        mcp_server.attach(pool)
+        app.state.graph = compile_graph(saver, await load_tools())
         # Os turnos em andamento, que rodam fora das conexões HTTP.
         app.state.turns = set()
 
         purge = asyncio.create_task(_purge_expired(pool, saver))
         try:
-            yield
+            # A app do MCP é montada, e uma app montada não roda o próprio
+            # lifespan: o gerenciador de sessões dela é aberto aqui.
+            async with mcp_server.server.session_manager.run():
+                yield
         finally:
             purge.cancel()
             # Cancelados, os turnos gravam o que tinham como interrompido e
@@ -128,11 +139,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.gather(*app.state.turns, return_exceptions=True)
             # O que sobrar depois disso é embedding, que o backfill completa.
             await memory_processing.drain(timeout=10)
+            mcp_server.attach(None)
             await cache.close()
 
 
 app = FastAPI(title="Graham Agent", description="Seu corretor de confiança", lifespan=lifespan)
 app.include_router(auth.router)
+app.include_router(keys.router)
 
 
 class ChatRequest(BaseModel):
@@ -323,7 +336,7 @@ async def _ticker_cards(
         # A ferramenta é síncrona; o LangChain a roda numa thread, então as
         # consultas que faltam acontecem em paralelo e fora do event loop.
         fetched = await asyncio.gather(
-            *(get_current_stock_price.ainvoke({"ticker_name": symbol}) for symbol in missing),
+            *(asyncio.to_thread(market.get_current_stock_price, symbol) for symbol in missing),
             return_exceptions=True,
         )
         for symbol, result in zip(missing, fetched):
@@ -334,8 +347,6 @@ async def _ticker_cards(
 
 
 # ─────────────────────────────── Confirmação ────────────────────────────────
-
-TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 
 APPROVAL_TITLES = {
     "registrar_compra": "Registrar compra na carteira",
@@ -354,7 +365,7 @@ def _approval_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
     formulário: o título da operação, o schema dos argumentos e os campos travados."""
     enriched = []
     for request in requests:
-        schema = TOOLS_BY_NAME[request["name"]].args_schema.model_json_schema()
+        schema = BY_NAME[request["name"]].input_model.model_json_schema()
         enriched.append({
             **request,
             "title": APPROVAL_TITLES.get(request["name"], request["name"]),
@@ -366,7 +377,7 @@ def _approval_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _validated_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Valida os valores que o usuário aprovou com o mesmo schema da ferramenta."""
-    schema = TOOLS_BY_NAME[name].args_schema
+    schema = BY_NAME[name].input_model
     try:
         return schema.model_validate(args).model_dump(mode="json")
     except ValidationError as error:
@@ -440,7 +451,15 @@ async def _run_turn(
     # for encerrado antes disso, o cliente desconectou no meio da resposta.
     settled = False
 
+    # A conexão MCP do turno, aberta dentro do `try` para uma falha ao abri-la
+    # ser tratada como qualquer erro do turno.
+    connections = AsyncExitStack()
+
     try:
+        connection = await connections.enter_async_context(
+            mcp_tools.turn_connection(pool, thread["user_id"])
+        )
+        context = replace(context, mcp=connection)
         async for event in graph.astream_events(
             graph_input, config=config, context=context, version="v2"
         ):
@@ -559,6 +578,8 @@ async def _run_turn(
             # garante que o texto parcial seja salvo antes de o gerador fechar.
             with anyio.CancelScope(shield=True):
                 await recorder.stop("interrupted")
+        with anyio.CancelScope(shield=True):
+            await connections.aclose()
 
 
 async def _start_turn(app: FastAPI, thread: dict[str, Any], question_id: UUID) -> AsyncIterator[str]:
@@ -964,3 +985,8 @@ class RevalidatedStaticFiles(StaticFiles):
 
 
 app.mount("/static", RevalidatedStaticFiles(directory=STATIC_DIR), name="static")
+
+
+# O servidor MCP, em /mcp, com os metadados de autorização em /.well-known.
+# Montado na raiz e por último: só recebe o que nenhuma rota acima atendeu.
+app.mount("/", mcp_server.app)

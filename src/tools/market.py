@@ -1,6 +1,7 @@
-"""Ferramentas do agente — wrappers sobre a API do yfinance."""
-import inspect, math, re, sys
-from langchain_core.tools import BaseTool
+"""Dados de mercado: wrappers sobre a API do yfinance e a busca de notícias."""
+
+import math
+import re
 
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -10,18 +11,10 @@ from typing import Any, Callable, Literal, Optional
 import httpx
 import pandas as pd
 import yfinance as yf
-from langchain_core.tools import tool
 
 from src.storage.cache import cached
-from src.agent.tools.schemas.input import (
+from src.tools.schemas.market import (
     INDUSTRY_KEYS,
-    CompanySearchInput,
-    IndustrySearchInput,
-    TickerInput,
-    TickerNewsInput,
-    TopicNewsInput,
-)
-from src.agent.tools.schemas.output import (
     CompanyMatch,
     CompanySearchResults,
     IndustryCompanies,
@@ -85,16 +78,6 @@ def _timestamp(value: Optional[Any]) -> Optional[datetime]:
     return pd.Timestamp(value).to_pydatetime()
 
 
-@tool(
-    "cotacao_atual_acao",
-    description=(
-        "Retorna a cotação atual e os indicadores rápidos de uma ação a partir do seu ticker: "
-        "nome da empresa, preço, variação do dia, abertura, máxima e mínima, volume, "
-        "valor de mercado, máxima e mínima de 52 semanas e médias móveis. "
-        "Use quando o usuário perguntar quanto vale uma ação ou como ela está se comportando hoje."
-    ),
-    args_schema=TickerInput,
-)
 def get_current_stock_price(ticker_name: str) -> dict[str, Any]:
     ticker = _ticker(ticker_name)
     fast_info = ticker.get_fast_info()
@@ -208,15 +191,6 @@ def _search_news(ticker_name: str, count: int) -> list[NewsArticle]:
     return []
 
 
-@tool(
-    "noticias_acao",
-    description=(
-        "Retorna as últimas notícias publicadas sobre uma ação, com título, resumo, "
-        "data de publicação e link. Use quando o usuário quiser saber o que está sendo "
-        "noticiado sobre uma empresa ou o que explica um movimento recente do papel."
-    ),
-    args_schema=TickerNewsInput,
-)
 # Sem notícias pode ser a fonte fora do ar: não fica no cache, e a próxima
 # pergunta tenta de novo.
 @cached("noticias_acao", ttl=NEWS_TTL, keep=lambda result: bool(result["articles"]))
@@ -298,17 +272,6 @@ def _topic_article(item: ET.Element) -> NewsArticle:
     )
 
 
-@tool(
-    "noticias_tema",
-    description=(
-        "Busca notícias recentes sobre um tema em fontes brasileiras: política econômica, "
-        "eleições, privatizações, regulação, juros, um setor inteiro. Use quando o assunto não "
-        "for só uma empresa, ou quando as notícias da ação não explicarem um movimento do papel: "
-        "busque o tema que pode estar por trás dele (a BBAS3 caiu por notícias eleitorais sobre "
-        "privatizar o Banco do Brasil, por exemplo)."
-    ),
-    args_schema=TopicNewsInput,
-)
 @cached("noticias_tema", ttl=NEWS_TTL, keep=lambda result: bool(result["articles"]))
 def search_topic_news(query: str, days: int = 30, count: int = 8) -> dict[str, Any]:
     try:
@@ -325,16 +288,6 @@ def search_topic_news(query: str, days: int = 30, count: int = 8) -> dict[str, A
     return news.model_dump(mode="json")
 
 
-@tool(
-    "buscar_ticker_por_empresa",
-    description=(
-        "Busca os tickers correspondentes ao nome de uma empresa, retornando código, nome, "
-        "bolsa, setor e indústria de cada resultado. Use quando o usuário citar a empresa pelo "
-        "nome ('Banco do Brasil', 'Petrobras') e for preciso descobrir o ticker antes de "
-        "consultar cotação ou notícias."
-    ),
-    args_schema=CompanySearchInput,
-)
 @cached("buscar_ticker_por_empresa", ttl=CATALOG_TTL)
 def find_ticker_by_company(company_name: str, count: int = 5) -> dict[str, Any]:
     search = yf.Search(
@@ -362,18 +315,6 @@ def find_ticker_by_company(company_name: str, count: int = 5) -> dict[str, Any]:
     return results.model_dump(mode="json")
 
 
-@tool(
-    "buscar_tickers_por_industria",
-    description=(
-        "Lista as principais empresas de uma indústria (subsetor) da classificação da Yahoo Finance, "
-        "com ticker, nome, recomendação dos analistas e peso dentro da indústria. "
-        "Exemplos de indústria: 'Banks - Regional', 'Software - Application', 'Oil & Gas E&P'. "
-        "Aceita variações de escrita do nome. Use o parâmetro 'region' para filtrar por país "
-        "(ex.: 'BR' para empresas brasileiras). Use para comparar concorrentes ou encontrar "
-        "empresas de um mesmo segmento."
-    ),
-    args_schema=IndustrySearchInput,
-)
 @cached("buscar_tickers_por_industria", ttl=CATALOG_TTL)
 def find_tickers_by_industry(
     industry: str, count: int = 10, region: str = "US"
@@ -403,11 +344,3 @@ def find_tickers_by_industry(
         companies=companies,
     )
     return result.model_dump(mode="json")
-
-TOOLS = [
-    obj
-    for _, obj in inspect.getmembers(
-        sys.modules[__name__],
-        predicate = lambda o: isinstance(o, BaseTool)
-    )
-]

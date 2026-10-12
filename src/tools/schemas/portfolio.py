@@ -5,7 +5,7 @@ from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from src.agent.tools.schemas import TickerSymbol
+from src.tools.schemas.common import TickerSymbol
 
 Quantity = Annotated[
     float,

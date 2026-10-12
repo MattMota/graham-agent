@@ -1,16 +1,225 @@
-"""Schemas de saída (retorno) das ferramentas do agente."""
+"""Esquemas das ferramentas de mercado.
 
+Os tipos que elas compartilham, a entrada (os argumentos que o agente envia,
+validados antes da chamada) e a saída (o que a Yahoo e o Google News devolvem,
+normalizado).
+"""
+
+import difflib
+import re
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from yfinance.const import SECTOR_INDUSTY_MAPPING
 
-from src.agent.tools.schemas import (
-    CompanyName,
-    IndustryLabel,
-    MarketRegionCode,
-    TickerSymbol,
-)
+from src.tools.schemas.common import TickerSymbol
+
+
+# Tipos ───────────────────────────────────────────────────────────────────────
+
+CompanyName = Annotated[
+    str,
+    Field(
+        title="Nome da empresa",
+        description=(
+            "O nome (completo ou parcial) da empresa. "
+            "Exemplos: 'Banco do Brasil', 'Apple', 'Petrobras'."
+        ),
+        examples=["Banco do Brasil", "Apple", "Petrobras"],
+        min_length=1,
+    ),
+]
+
+IndustryLabel = Annotated[
+    str,
+    Field(
+        title="Indústria",
+        description=(
+            "O nome da indústria (subsetor) conforme a classificação da Yahoo Finance. "
+            "Exemplos: 'Banks - Regional', 'Software - Application', 'Oil & Gas E&P'."
+        ),
+        examples=["Banks - Regional", "Software - Application", "Oil & Gas E&P"],
+        min_length=1,
+    ),
+]
+
+# Regiões aceitas pelo endpoint de resumo de mercado da Yahoo (yfinance.MarketRegion).
+MarketRegionCode = Annotated[
+    Literal[
+        "US",
+        "GB",
+        "ASIA",
+        "EUROPE",
+        "RATES",
+        "COMMODITIES",
+        "CURRENCIES",
+        "CRYPTOCURRENCIES",
+    ],
+    Field(
+        title="Região do mercado",
+        description=(
+            "A região/segmento de mercado a ser consultado. "
+            "'US' e 'EUROPE' trazem os principais índices da região; "
+            "'RATES', 'COMMODITIES', 'CURRENCIES' e 'CRYPTOCURRENCIES' trazem "
+            "juros, commodities, câmbio e criptomoedas."
+        ),
+        examples=["US", "EUROPE", "CURRENCIES"],
+    ),
+]
+
+CountryRegionCode = Annotated[
+    str,
+    Field(
+        title="País de referência",
+        description=(
+            "Código ISO 3166-1 alpha-2 do país usado para filtrar as empresas listadas "
+            "(ex.: 'US' para empresas americanas, 'BR' para empresas brasileiras)."
+        ),
+        examples=["US", "BR", "GB"],
+        min_length=2,
+        max_length=2,
+        pattern=r"^[A-Za-z]{2}$",
+    ),
+]
+
+
+# Entrada ─────────────────────────────────────────────────────────────────────
+
+ResultLimit = Annotated[
+    int,
+    Field(
+        title="Quantidade de resultados",
+        description="Número máximo de resultados a retornar.",
+        ge=1,
+        le=50,
+    ),
+]
+
+
+def _industry_key(industry_name: str) -> str:
+    """Converte o nome de uma indústria na chave usada pela API da Yahoo.
+
+    Exemplo: 'Banks—Regional' -> 'banks-regional'.
+    """
+    normalized = industry_name.strip().lower().replace("&", " ").replace(",", " ")
+    return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+
+
+# Chaves válidas de indústria -> nome legível, derivadas do catálogo do yfinance.
+# O `SECTOR_INDUSTY_MAPPING_LC` do próprio yfinance não serve aqui porque mantém
+# o travessão (—) dos nomes originais, que a API da Yahoo rejeita com HTTP 404.
+INDUSTRY_KEYS: dict[str, str] = {
+    _industry_key(industry): industry
+    for industries in SECTOR_INDUSTY_MAPPING.values()
+    for industry in industries
+}
+
+
+class TickerInput(BaseModel):
+    """Argumentos de uma consulta por ticker."""
+
+    ticker_name: TickerSymbol
+
+    @field_validator("ticker_name")
+    @classmethod
+    def _clean(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class TickerNewsInput(TickerInput):
+    """Argumentos da busca de notícias de um ticker."""
+
+    count: ResultLimit = 5
+    tab: Annotated[
+        Literal["news", "all", "press releases"],
+        Field(
+            title="Tipo de conteúdo",
+            description=(
+                "Qual aba de notícias consultar: 'news' para notícias, "
+                "'press releases' para comunicados da empresa e 'all' para ambos."
+            ),
+        ),
+    ] = "news"
+
+
+class TopicNewsInput(BaseModel):
+    """Argumentos da busca de notícias por tema."""
+
+    query: str = Field(
+        title="Tema",
+        description=(
+            "Palavras-chave em português, como numa busca de notícias: o assunto e os nomes "
+            "que o identificam ('privatização Banco do Brasil', 'eleições estatais', "
+            "'taxa Selic Copom'). Sem frases inteiras nem tickers."
+        ),
+        min_length=2,
+        max_length=120,
+    )
+    days: int = Field(
+        default=30,
+        title="Período em dias",
+        description="Só notícias publicadas nos últimos N dias.",
+        ge=1,
+        le=365,
+    )
+    count: ResultLimit = 8
+
+    @field_validator("query")
+    @classmethod
+    def _clean(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
+class MarketInput(BaseModel):
+    """Argumentos da consulta de resumo de mercado."""
+
+    region: MarketRegionCode = "US"
+
+
+class CompanySearchInput(BaseModel):
+    """Argumentos da busca de ticker pelo nome da empresa."""
+
+    company_name: CompanyName
+    count: ResultLimit = 5
+
+
+class IndustrySearchInput(BaseModel):
+    """Argumentos da busca de tickers por indústria."""
+
+    industry: IndustryLabel
+    count: ResultLimit = 10
+    region: CountryRegionCode = "US"
+
+    @field_validator("industry")
+    @classmethod
+    def _resolve_key(cls, value: str) -> str:
+        """Normaliza o nome informado para uma chave de indústria válida.
+
+        Aceita variações de escrita ('banks regional', 'Banks—Regional') e,
+        quando não há correspondência exata, tenta a aproximação mais próxima.
+        """
+        key = _industry_key(value)
+        if key in INDUSTRY_KEYS:
+            return key
+
+        matches = difflib.get_close_matches(key, INDUSTRY_KEYS, n=1, cutoff=0.6)
+        if matches:
+            return matches[0]
+
+        suggestions = ", ".join(sorted(INDUSTRY_KEYS)[:10])
+        raise ValueError(
+            f"Indústria '{value}' não reconhecida. "
+            f"Use um dos nomes da classificação da Yahoo Finance, por exemplo: {suggestions}..."
+        )
+
+    @field_validator("region")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.upper()
+
+
+# Saída ───────────────────────────────────────────────────────────────────────
 
 
 class StockQuote(BaseModel):
