@@ -126,38 +126,45 @@ async def delete_thread(pool: AsyncConnectionPool, thread_id: UUID, user_id: UUI
     regeneração num fork), a versão anterior volta a valer. Os fatos sobre o
     usuário guardados nesta conversa continuam.
     """
-    row = await _one(
-        pool,
-        """
-        WITH thread AS (
-            UPDATE agent.threads SET deleted_at = now()
-             WHERE id = %(thread_id)s AND user_id = %(user_id)s AND deleted_at IS NULL
-            RETURNING id
-        ),
-        turns AS (
-            SELECT DISTINCT sources.memory_id
-              FROM agent.memory_sources sources
-              JOIN agent.messages message ON message.id = sources.message_id
-              JOIN agent.memories memory ON memory.id = sources.memory_id
-             WHERE message.thread_id IN (SELECT id FROM thread)
-               AND memory.category = 'conversa'
-        ),
-        revived AS (
-            UPDATE agent.memories SET superseded_by_id = NULL
-             WHERE superseded_by_id IN (SELECT memory_id FROM turns)
-               AND id NOT IN (SELECT memory_id FROM turns)
-        ),
-        unlinked AS (
-            DELETE FROM agent.memory_sources WHERE memory_id IN (SELECT memory_id FROM turns)
-        ),
-        removed AS (
-            DELETE FROM agent.memories WHERE id IN (SELECT memory_id FROM turns)
-        )
-        SELECT count(*) AS deleted FROM thread
-        """,
-        {"thread_id": thread_id, "user_id": user_id},
-    )
-    return row["deleted"] > 0
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            # Primeiro a thread: a escrita trava a linha, e uma indexação de turno
+            # em curso (que a trava para ler) termina antes ou desiste depois.
+            cursor = await conn.execute(
+                """
+                UPDATE agent.threads SET deleted_at = now()
+                 WHERE id = %s AND user_id = %s AND deleted_at IS NULL
+                RETURNING id
+                """,
+                (thread_id, user_id),
+            )
+            if await cursor.fetchone() is None:
+                return False
+            # Numa instrução à parte, com um retrato novo do banco: ela vê o
+            # turno que a indexação gravou enquanto a exclusão esperava a trava.
+            await conn.execute(
+                """
+                WITH turns AS (
+                    SELECT DISTINCT sources.memory_id
+                      FROM agent.memory_sources sources
+                      JOIN agent.messages message ON message.id = sources.message_id
+                      JOIN agent.memories memory ON memory.id = sources.memory_id
+                     WHERE message.thread_id = %(thread_id)s
+                       AND memory.category = 'conversa'
+                ),
+                revived AS (
+                    UPDATE agent.memories SET superseded_by_id = NULL
+                     WHERE superseded_by_id IN (SELECT memory_id FROM turns)
+                       AND id NOT IN (SELECT memory_id FROM turns)
+                ),
+                unlinked AS (
+                    DELETE FROM agent.memory_sources WHERE memory_id IN (SELECT memory_id FROM turns)
+                )
+                DELETE FROM agent.memories WHERE id IN (SELECT memory_id FROM turns)
+                """,
+                {"thread_id": thread_id},
+            )
+            return True
 
 
 async def fork_thread(

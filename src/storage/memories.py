@@ -60,13 +60,48 @@ async def set_embedding(
         )
 
 
+# Numa instrução só: com o pool em autocommit, uma por origem seriam transações
+# separadas, e uma exclusão da conversa no meio delas veria só parte das origens.
+SOURCES_INSERT = """
+    INSERT INTO agent.memory_sources (memory_id, message_id)
+    SELECT %s, unnest(%s::uuid[])
+    ON CONFLICT DO NOTHING
+"""
+
+
 async def add_sources(pool: AsyncConnectionPool, memory_id: UUID, message_ids: list[UUID]) -> None:
     async with pool.connection() as conn:
-        for message_id in message_ids:
-            await conn.execute(
-                "INSERT INTO agent.memory_sources (memory_id, message_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (memory_id, message_id),
+        await conn.execute(SOURCES_INSERT, (memory_id, message_ids))
+
+
+async def add_turn_memory(
+    pool: AsyncConnectionPool, user_id: UUID, thread_id: UUID, content: str, message_ids: list[UUID]
+) -> Row | None:
+    """Grava a memória `conversa` de um turno com as suas origens, ou `None` se a
+    conversa já tiver sido apagada.
+
+    A trava compartilhada na thread serializa a gravação com a exclusão da
+    conversa, que trava a mesma linha para escrever: ou o turno é gravado antes
+    e a exclusão o leva junto, ou a exclusão vem antes e o turno não é gravado.
+    """
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            cursor = await conn.execute(
+                "SELECT 1 FROM agent.threads WHERE id = %s AND deleted_at IS NULL FOR SHARE", (thread_id,)
             )
+            if await cursor.fetchone() is None:
+                return None
+            cursor = await conn.execute(
+                f"""
+                INSERT INTO agent.memories (user_id, category, content)
+                VALUES (%s, 'conversa', %s)
+                RETURNING {MEMORY_COLUMNS}
+                """,
+                (user_id, content),
+            )
+            row = await cursor.fetchone()
+            await conn.execute(SOURCES_INSERT, (row["id"], message_ids))
+            return row
 
 
 async def supersede(pool: AsyncConnectionPool, old_id: UUID, new_id: UUID) -> None:

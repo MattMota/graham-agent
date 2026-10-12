@@ -174,8 +174,9 @@ async def index_turn(pool: AsyncConnectionPool, user_id: UUID, title: str | None
     lines.append(f"Resposta: {final['content']}")
     content = "\n".join(lines)
 
-    row = await memories.add_memory(pool, user_id, "conversa", content)
-    await memories.add_sources(pool, row["id"], [question["id"], final["id"]])
+    row = await memories.add_turn_memory(pool, user_id, final["thread_id"], content, [question["id"], final["id"]])
+    if row is None:
+        return  # a conversa foi apagada enquanto o turno era indexado
     for older in await memories.turn_versions(pool, user_id, question["id"], row["id"]):
         await memories.supersede(pool, older["id"], row["id"])
     await process_memory(pool, user_id, row["id"], "conversa", content)
