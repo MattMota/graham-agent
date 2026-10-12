@@ -6,6 +6,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from src.agent.runtime.state_graph import AgentState, compile_graph
 from src.agent.tools.registry import load_tools
+from src.agent.tools.remote import load_conventions
 
 CONFIG = {"configurable": {"thread_id": "cli"}}
 
@@ -39,7 +40,7 @@ async def responder(graph: CompiledStateGraph, pergunta: str) -> None:
 async def main() -> None:
     # O REPL não grava no banco: a conversa vive na memória do processo. As
     # ferramentas MCP rodam em processo, sem usuário: mercado sim, carteira não.
-    graph = compile_graph(InMemorySaver(), await load_tools())
+    graph = compile_graph(InMemorySaver(), await load_tools(), await load_conventions())
     print("Graham Agent — digite 'sair' para encerrar.")
 
     while True:

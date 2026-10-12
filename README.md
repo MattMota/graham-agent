@@ -201,6 +201,7 @@ src/
 │       └── schemas/
 │           └── memory.py    Schemas de entrada da memória
 ├── mcp_server/
+│   ├── resources/           Material de referência do MCP: convenções e glossário (Markdown), fontes e catálogos
 │   └── server.py            Servidor MCP: verificador de tokens e registro do catálogo
 ├── tools/                   As ferramentas publicadas pelo MCP, sem LangChain
 │   ├── analysis.py          Proventos (de um ativo ou da carteira) e desempenho
@@ -305,6 +306,7 @@ As ferramentas de mercado, análise, carteira e watchlist vivem num servidor [MC
 - **Definições na subida.** O Graham lê nome, descrição e esquema de entrada das ferramentas do próprio servidor, em processo, ao subir (o HTTP ainda não atende nesse momento), e liga o modelo a elas ao compilar o grafo.
 - **O gráfico à parte.** O `desempenho` devolve as métricas no texto e a série do gráfico em `structuredContent`, que vira o artefato da mensagem: a interface desenha, o modelo não gasta tokens com ela.
 - **Autorização.** Sem token, `/mcp` responde `401` com `WWW-Authenticate` apontando para os metadados do recurso protegido (RFC 9728, em `/.well-known/oauth-protected-resource/mcp`). Por enquanto só há chaves de acesso; o fluxo OAuth 2.1 completo, exigido por conectores como os do claude.ai, é uma etapa seguinte.
+- **Resources de referência.** Além das ferramentas, o servidor publica o que um agente precisa saber para usá-las bem: `graham://convencoes` (códigos de ativos, moedas, percentuais, datas, notas, erros e escrita), `graham://glossario` (o sentido exato de cada termo dos resultados, como é calculado), `graham://fontes` (de onde vem cada dado e por quanto tempo fica em cache, tirado das próprias constantes do código), `graham://catalogo/industrias` (os 145 subsetores aceitos) e `graham://catalogo/moedas`. Só referência, nada do usuário: a carteira já é servida pelas ferramentas, e um resource com dados pessoais tende a entrar inteiro no contexto do agente cliente. O Graham lê as convenções do próprio MCP na subida e as põe no prompt, sem a seção de escrita (nele, quem confirma é o cartão).
 - **A memória fica de fora.** Guardar, buscar, ver e esquecer memórias continuam ferramentas locais do Graham: a memória é dele, e expô-la deixaria outro agente ler e alterar o que ele sabe do usuário.
 
 No REPL, sem usuário, as ferramentas MCP rodam em processo: as de mercado funcionam, e as de carteira avisam que precisam de uma conta.

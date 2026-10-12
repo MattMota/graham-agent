@@ -22,6 +22,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from psycopg_pool import AsyncConnectionPool
 from pydantic import ValidationError
 
+from src.mcp_server import resources
 from src.storage import tokens
 from src.tools.catalog import CATALOG, READ, WRITE, ToolSpec
 from src.tools.context import ToolContext, ToolFailure
@@ -66,7 +67,8 @@ server = MCPServer(
     instructions=(
         "Dados de mercado (B3 e bolsas dos EUA), notícias, proventos, desempenho e a carteira "
         "e a watchlist do usuário dono da chave. Ações brasileiras usam o sufixo '.SA'. "
-        "As ferramentas que gravam exigem uma chave com permissão de escrita."
+        "As ferramentas que gravam exigem uma chave com permissão de escrita. Antes de usá-las, "
+        "leia o resource graham://convencoes; graham://glossario explica os termos dos resultados."
     ),
     token_verifier=TokenVerifier(),
     auth=AuthSettings(
@@ -146,6 +148,8 @@ def _register(spec: ToolSpec) -> None:
 
 for _spec in CATALOG:
     _register(_spec)
+
+resources.register(server)
 
 
 def _allowed_hosts() -> list[str]:

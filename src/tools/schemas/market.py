@@ -97,7 +97,7 @@ ResultLimit = Annotated[
 ]
 
 
-def _industry_key(industry_name: str) -> str:
+def industry_key(industry_name: str) -> str:
     """Converte o nome de uma indústria na chave usada pela API da Yahoo.
 
     Exemplo: 'Banks—Regional' -> 'banks-regional'.
@@ -110,7 +110,7 @@ def _industry_key(industry_name: str) -> str:
 # O `SECTOR_INDUSTY_MAPPING_LC` do próprio yfinance não serve aqui porque mantém
 # o travessão (—) dos nomes originais, que a API da Yahoo rejeita com HTTP 404.
 INDUSTRY_KEYS: dict[str, str] = {
-    _industry_key(industry): industry
+    industry_key(industry): industry
     for industries in SECTOR_INDUSTY_MAPPING.values()
     for industry in industries
 }
@@ -199,7 +199,7 @@ class IndustrySearchInput(BaseModel):
         Aceita variações de escrita ('banks regional', 'Banks—Regional') e,
         quando não há correspondência exata, tenta a aproximação mais próxima.
         """
-        key = _industry_key(value)
+        key = industry_key(value)
         if key in INDUSTRY_KEYS:
             return key
 

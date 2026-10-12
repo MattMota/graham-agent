@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # O servidor MCP, montado nesta mesma app, usa o pool daqui. O grafo
         # conhece as ferramentas pela listagem dele.
         mcp_server.attach(pool)
-        app.state.graph = compile_graph(saver, await load_tools())
+        app.state.graph = compile_graph(saver, await load_tools(), await mcp_tools.load_conventions())
         # Os turnos em andamento, que rodam fora das conexões HTTP.
         app.state.turns = set()
 

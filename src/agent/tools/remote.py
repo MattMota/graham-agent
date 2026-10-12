@@ -29,6 +29,7 @@ from mcp.types import CallToolResult, Tool
 from psycopg_pool import AsyncConnectionPool
 
 from src.agent.runtime.context import AgentContext
+from src.mcp_server import resources
 from src.mcp_server import server as mcp_server
 from src.storage import tokens
 from src.tools.catalog import READ, WRITE
@@ -119,6 +120,18 @@ def _proxy(definition: Tool) -> BaseTool:
         # A falha volta ao modelo como resposta da ferramenta, marcada como erro.
         handle_tool_error=True,
     )
+
+
+async def load_conventions() -> str:
+    """As convenções das ferramentas, lidas do próprio MCP, para o prompt do Graham.
+
+    Fica de fora a seção de escrita: ela pede a um agente externo que confirme
+    com o usuário antes de gravar, e no Graham quem confirma é o cartão.
+    """
+    async with Client(mcp_server.server) as local:
+        text = (await local.read_resource(resources.CONVENTIONS)).contents[0].text
+    sections = re.split(r"(?m)^(?=## )", text)[1:]
+    return "".join(section for section in sections if not section.startswith("## Escrita")).strip()
 
 
 async def load() -> list[BaseTool]:
