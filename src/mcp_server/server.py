@@ -23,6 +23,8 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import ValidationError
 
 from src.mcp_server import resources
+from src.mcp_server.skills import SKILLS
+from src.mcp_server.skills_extension import SkillsExtension, register_prompts
 from src.storage import tokens
 from src.tools.catalog import CATALOG, READ, WRITE, ToolSpec
 from src.tools.context import ToolContext, ToolFailure
@@ -68,8 +70,11 @@ server = MCPServer(
         "Dados de mercado (B3 e bolsas dos EUA), notícias, proventos, desempenho e a carteira "
         "e a watchlist do usuário dono da chave. Ações brasileiras usam o sufixo '.SA'. "
         "As ferramentas que gravam exigem uma chave com permissão de escrita. Antes de usá-las, "
-        "leia o resource graham://convencoes; graham://glossario explica os termos dos resultados."
+        "leia o resource graham://convencoes; graham://glossario explica os termos dos resultados. "
+        "Roteiros prontos (analisar um ativo, explicar um movimento, revisar a carteira, registrar "
+        "uma operação) estão nas skills (skills/list) e nos prompts de mesmo nome."
     ),
+    extensions=[SkillsExtension(SKILLS)],
     token_verifier=TokenVerifier(),
     auth=AuthSettings(
         issuer_url=public_url(),
@@ -150,6 +155,7 @@ for _spec in CATALOG:
     _register(_spec)
 
 resources.register(server)
+register_prompts(server, SKILLS)
 
 
 def _allowed_hosts() -> list[str]:

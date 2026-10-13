@@ -97,7 +97,10 @@ def main() -> None:
     access = "leitura e escrita" if args.escrita else "só leitura"
     print(f"Chave temporária criada para {args.email} ({access}); será revogada ao fechar o Inspector.", flush=True)
     mode = [] if extra and extra[0] in ("--web", "--cli", "--tui") else ["--web"]
-    command = [npx, "-y", INSPECTOR, *mode, *extra, "--transport", "http", "--server-url", url,
+    # Sem a era, o Inspector conecta pela versão antiga do protocolo, que não
+    # negocia extensões: as skills ficariam invisíveis. `auto` é o que o Graham usa.
+    era = [] if "--protocol-era" in extra else ["--protocol-era", "auto"]
+    command = [npx, "-y", INSPECTOR, *mode, *extra, *era, "--transport", "http", "--server-url", url,
                "--header", f"Authorization: Bearer {token}"]
     try:
         subprocess.run(command, check=False)

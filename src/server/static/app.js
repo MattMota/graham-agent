@@ -793,6 +793,7 @@ const TOOL_NAMES = {
   buscar_memorias: "busca na memória",
   ver_memoria: "memória",
   esquecer_memoria: "memória",
+  ler_skill: "skill",
   noticias_acao: "notícias recentes",
   noticias_tema: "notícias do tema",
   buscar_ticker_por_empresa: "busca de ticker",
@@ -821,7 +822,7 @@ function toolSubject(payload) {
   if (!payload || typeof payload !== "object") return "";
   const value = payload.ticker_name
     || (Array.isArray(payload.tickers) && payload.tickers.join(", "))
-    || payload.company_name || payload.industry || payload.query || payload.region;
+    || payload.company_name || payload.industry || payload.query || payload.name || payload.region;
   return value ? ` · ${value}` : "";
 }
 

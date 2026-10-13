@@ -73,13 +73,11 @@ def tools_node(tools: list[BaseTool]):
 
 
 async def _respond(
-    state: AgentState, runtime: Runtime[AgentContext], model: Runnable, conventions: str
+    state: AgentState, runtime: Runtime[AgentContext], model: Runnable, sections: tuple[str, ...]
 ) -> dict:
-    parts = [SYSTEM_PROMPT.content]
-    # How the tools read arguments and write results, from the MCP server's
-    # own reference, so the prompt and the tools never drift apart.
-    if conventions:
-        parts.append(f"# Convenções das ferramentas\n\n{conventions}")
+    # The tools' conventions and the skills catalog come from the MCP server's
+    # own reference, so the prompt and the server never drift apart.
+    parts = [SYSTEM_PROMPT.content, *sections]
     # The model has no clock: without today's date it cannot fill in the date
     # of a trade made "hoje".
     parts.append(f"Hoje é {date.today():%Y-%m-%d}.")
@@ -183,28 +181,29 @@ async def request_approval(state: AgentState, runtime: Runtime[AgentContext]) ->
     )
 
 
-def agent_node(model: Runnable, conventions: str):
+def agent_node(model: Runnable, sections: tuple[str, ...]):
     async def call_model(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
-        return await _respond(state, runtime, model, conventions)
+        return await _respond(state, runtime, model, sections)
 
     return call_model
 
 
 def compile_graph(
-    checkpointer: BaseCheckpointSaver, tools: list[BaseTool], conventions: str = ""
+    checkpointer: BaseCheckpointSaver, tools: list[BaseTool], sections: tuple[str, ...] = ()
 ) -> CompiledStateGraph:
     """Compila o grafo com o checkpointer de quem vai executá-lo e as ferramentas.
 
     O servidor usa o Postgres; o REPL, a memória do processo. A pausa para
     aprovação depende do checkpointer: é nele que o grafo espera a resposta.
     As ferramentas vêm do servidor MCP, listado na subida, e da memória local;
-    as convenções delas, do resource do mesmo servidor.
+    `sections` são as partes do prompt lidas do mesmo servidor (convenções e
+    skills).
     """
     builder = (
         StateGraph(AgentState, context_schema=AgentContext)
 
         # Nodes
-        .add_node("agent", agent_node(bind_model(tools), conventions)) # Basic agent response
+        .add_node("agent", agent_node(bind_model(tools), sections)) # Basic agent response
         .add_node("approval", request_approval, destinations=("tools", "agent")) # Human in the loop
         .add_node("tools", tools_node(tools)) # Tool calling
 

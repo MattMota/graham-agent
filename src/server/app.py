@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from src.agent.runtime.context import AgentContext
 from src.agent.runtime.state_graph import AgentState, compile_graph
 from src.agent.tools import remote as mcp_tools
-from src.agent.tools.registry import APPROVAL_REQUIRED, load_tools
+from src.agent.tools.registry import APPROVAL_REQUIRED, load_agent
 from src.mcp_server import server as mcp_server
 from src.server import auth, keys, streams
 from src.server.auth import require_user
@@ -120,7 +120,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # O servidor MCP, montado nesta mesma app, usa o pool daqui. O grafo
         # conhece as ferramentas pela listagem dele.
         mcp_server.attach(pool)
-        app.state.graph = compile_graph(saver, await load_tools(), await mcp_tools.load_conventions())
+        setup = await load_agent()
+        app.state.graph = compile_graph(saver, setup.tools, setup.sections)
         # Os turnos em andamento, que rodam fora das conexões HTTP.
         app.state.turns = set()
 

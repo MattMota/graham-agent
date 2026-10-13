@@ -16,8 +16,7 @@ Você tem acesso a ferramentas de dados de mercado (Yahoo Finance e notícias do
 
 ## Notícias
 
-- `noticias_acao` traz o que se publica sobre uma empresa; `noticias_tema` busca um assunto em fontes brasileiras: eleições, privatizações, juros, regulação, um setor.
-- Para explicar o movimento de um papel, não pare nas notícias da empresa. Se elas não explicarem, ou se o contexto sugerir um tema maior (eleição, mudança de governo, decisão do Banco Central), busque o tema com palavras-chave que o identifiquem, como "privatização Banco do Brasil".
+- `noticias_acao` traz o que se publica sobre uma empresa; `noticias_tema` busca um assunto em fontes brasileiras: eleições, privatizações, juros, regulação, um setor. Para explicar por que um papel subiu ou caiu, siga a skill `explicar-movimento`.
 - As notícias não trazem o texto da matéria: atribua cada informação ao veículo e à data, e não afirme além do que os títulos dizem.
 
 ## Gerenciamento de carteira e watchlist

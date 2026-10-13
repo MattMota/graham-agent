@@ -37,6 +37,7 @@ As de mercado, análise, carteira e watchlist ficam no [servidor MCP](#servidor-
 | `buscar_memorias` | `search_fact` | Fatos e trechos de conversas anteriores relacionados, por busca híbrida |
 | `ver_memoria` | `memory_id` | O conteúdo completo; numa conversa, as mensagens originais do turno |
 | `esquecer_memoria` | `memory_id` | Marca a memória como esquecida, sem apagá-la |
+| `ler_skill` | `name`, `file?` | O texto de uma skill do servidor MCP (um roteiro para tarefa recorrente) ou de um arquivo de apoio dela |
 
 ✋ Pede a confirmação do usuário antes de rodar (veja [Confirmação das operações](#confirmação-das-operações)).
 
@@ -200,10 +201,13 @@ src/
 │       ├── memory.py        As ferramentas de memória, locais
 │       ├── registry.py      As ferramentas do MCP e as locais, e as que pedem confirmação
 │       ├── remote.py        As ferramentas do MCP vistas como ferramentas LangChain; a conexão do turno
+│       ├── skills.py        O catálogo de skills do MCP no prompt e a ferramenta ler_skill
 │       └── schemas/
 │           └── memory.py    Schemas de entrada da memória
 ├── mcp_server/
 │   ├── resources/           Material de referência do MCP: convenções e glossário (Markdown), fontes e catálogos
+│   ├── skills/              Skills por grupo (analise, carteira); o padrão está no CLAUDE.md da pasta
+│   ├── skills_extension.py  Serve as skills pela extensão SEP-2640 e como prompts
 │   └── server.py            Servidor MCP: verificador de tokens e registro do catálogo
 ├── tools/                   As ferramentas publicadas pelo MCP, sem LangChain
 │   ├── analysis.py          Proventos (de um ativo ou da carteira) e desempenho
@@ -309,6 +313,7 @@ As ferramentas de mercado, análise, carteira e watchlist vivem num servidor [MC
 - **O gráfico à parte.** O `desempenho` devolve as métricas no texto e a série do gráfico em `structuredContent`, que vira o artefato da mensagem: a interface desenha, o modelo não gasta tokens com ela.
 - **Autorização.** Sem token, `/mcp` responde `401` com `WWW-Authenticate` apontando para os metadados do recurso protegido (RFC 9728, em `/.well-known/oauth-protected-resource/mcp`). Por enquanto só há chaves de acesso; o fluxo OAuth 2.1 completo, exigido por conectores como os do claude.ai, é uma etapa seguinte.
 - **Resources de referência.** Além das ferramentas, o servidor publica o que um agente precisa saber para usá-las bem: `graham://convencoes` (códigos de ativos, moedas, percentuais, datas, notas, erros e escrita), `graham://glossario` (o sentido exato de cada termo dos resultados, como é calculado), `graham://fontes` (de onde vem cada dado e por quanto tempo fica em cache, tirado das próprias constantes do código), `graham://catalogo/industrias` (os 145 subsetores aceitos) e `graham://catalogo/moedas`. Só referência, nada do usuário: a carteira já é servida pelas ferramentas, e um resource com dados pessoais tende a entrar inteiro no contexto do agente cliente. O Graham lê as convenções do próprio MCP na subida e as põe no prompt, sem a seção de escrita (nele, quem confirma é o cartão).
+- **Skills.** Roteiros para tarefas recorrentes (`analisar-ativo`, `explicar-movimento`, `revisar-carteira`, `registrar-operacao`), organizados por grupo em `src/mcp_server/skills/`. Saem de três formas: pela extensão de skills do MCP ([SEP-2640](https://modelcontextprotocol.io/seps/2640-skills-extension), `skills/list` e `skills/get` com o SHA-256 de cada arquivo, em `skill://<grupo>/<nome>/SKILL.md`), que só existe na versão 2026-07-28 do protocolo; como prompts de mesmo nome, com argumentos, para os clientes que ainda não falam a extensão; e no próprio Graham, que lista nome e descrição de cada uma no prompt e carrega o roteiro com `ler_skill` quando a tarefa pede. O SDK documenta um suporte de servidor a skills que ainda não saiu (a 2.3.0 é a última publicada); até lá, os dois métodos são implementados sobre o mecanismo genérico de extensões dele. Como criar uma skill, e o padrão de variantes por argumento, está no `CLAUDE.md` da pasta.
 - **A memória fica de fora.** Guardar, buscar, ver e esquecer memórias continuam ferramentas locais do Graham: a memória é dele, e expô-la deixaria outro agente ler e alterar o que ele sabe do usuário.
 
 No REPL, sem usuário, as ferramentas MCP rodam em processo: as de mercado funcionam, e as de carteira avisam que precisam de uma conta.
@@ -323,7 +328,7 @@ uv run scripts/mcp_inspector.py --email user@email.com --escrita   # permite as 
 uv run scripts/mcp_inspector.py --email user@email.com -- --cli --method tools/list
 ```
 
-O script cria uma chave temporária para a conta (só leitura, a não ser com `--escrita`), passa-a ao Inspector no cabeçalho `Authorization` e a revoga quando ele fecha; se o script cair antes, ela vence em 12 horas. O que vier depois de `--` vai direto ao Inspector. Precisa do Node (`npx`). Sem a chave, o Inspector tentaria o fluxo OAuth, que o servidor ainda não oferece.
+O script cria uma chave temporária para a conta (só leitura, a não ser com `--escrita`), passa-a ao Inspector no cabeçalho `Authorization` e a revoga quando ele fecha; se o script cair antes, ela vence em 12 horas. Ele também pede ao Inspector a negociação automática da versão do protocolo (`--protocol-era auto`): na versão antiga, que o Inspector usaria por padrão, as skills não aparecem. Para conferir a conformidade delas com a SEP-2640: `-- --cli --method skills/list --verify`. O que vier depois de `--` vai direto ao Inspector. Precisa do Node (`npx`). Sem a chave, o Inspector tentaria o fluxo OAuth, que o servidor ainda não oferece.
 
 ### Conversas no banco
 
