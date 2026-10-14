@@ -13,6 +13,9 @@ State = Literal["streaming", "awaiting_approval", "completed", "interrupted", "f
 
 THREAD_COLUMNS = "id, user_id, title, forked_from_message_id, head_message_id, created_at"
 
+# Tamanho máximo do título, tirado da primeira pergunta da conversa.
+MAX_TITLE = 80
+
 
 async def _one(pool: AsyncConnectionPool, query: str, params: tuple = ()) -> Row | None:
     async with pool.connection() as conn:
@@ -33,12 +36,23 @@ def _json(value: Any) -> Jsonb | None:
 # Threads ───────────────────────────────────────────────────────────────────
 
 
-async def create_thread(pool: AsyncConnectionPool, user_id: UUID, title: str) -> Row:
-    return await _one(
+async def ensure_thread(pool: AsyncConnectionPool, thread_id: UUID, user_id: UUID, title: str) -> Row | None:
+    """A thread do usuário com este id, criada agora se ainda não existir.
+
+    O id vem do cliente, que o gera ao começar uma conversa (como o AG-UI
+    espera). Um id que já é de outro usuário, ou de uma conversa apagada, não
+    devolve nada.
+    """
+    await _one(
         pool,
-        f"INSERT INTO agent.threads (user_id, title) VALUES (%s, %s) RETURNING {THREAD_COLUMNS}",
-        (user_id, title),
+        """
+        INSERT INTO agent.threads (id, user_id, title) VALUES (%s, %s, %s)
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+        """,
+        (thread_id, user_id, title),
     )
+    return await get_thread(pool, thread_id, user_id)
 
 
 async def get_thread(pool: AsyncConnectionPool, thread_id: UUID, user_id: UUID) -> Row | None:
@@ -205,16 +219,22 @@ async def add_message(
     payload: dict[str, Any] | None = None,
     model: str | None = None,
     params: dict[str, Any] | None = None,
+    message_id: UUID | None = None,
 ) -> UUID:
-    """Insere a mensagem e a torna a `head` da thread."""
+    """Insere a mensagem e a torna a `head` da thread.
+
+    Sem `message_id`, o banco gera o id; com ele, vale o de quem já anunciou a
+    mensagem por esse id (o cliente, para a pergunta; o stream, para o
+    resultado de uma ferramenta).
+    """
     async with pool.connection() as conn, conn.transaction():
         cursor = await conn.execute(
             """
-            INSERT INTO agent.messages (thread_id, parent_id, role, state, content, payload, model, params)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO agent.messages (id, thread_id, parent_id, role, state, content, payload, model, params)
+            VALUES (coalesce(%s, uuidv7()), %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (thread_id, parent_id, role, state, content, _json(payload), model, _json(params)),
+            (message_id, thread_id, parent_id, role, state, content, _json(payload), model, _json(params)),
         )
         message_id = (await cursor.fetchone())["id"]
         await conn.execute(

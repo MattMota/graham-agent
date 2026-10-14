@@ -48,14 +48,3 @@ def to_langchain(rows: list[Row]) -> list[BaseMessage]:
 
     return messages
 
-
-def split_turns(rows: list[Row]) -> list[list[Row]]:
-    """Agrupa o caminho em turnos: cada pergunta sozinha e, depois dela, as
-    mensagens do assistente e das ferramentas até a pergunta seguinte."""
-    turns: list[list[Row]] = []
-    for row in rows:
-        if row["role"] == "user" or not turns or turns[-1][0]["role"] == "user":
-            turns.append([row])
-        else:
-            turns[-1].append(row)
-    return turns

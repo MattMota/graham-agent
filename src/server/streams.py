@@ -1,13 +1,14 @@
-"""Streams retomáveis: o turno roda desacoplado da conexão HTTP.
+"""Streams retomáveis: a execução roda desacoplada da conexão HTTP.
 
-Cada turno grava os seus eventos SSE num Redis Stream, e a conexão do navegador
-só lê dele. Se ela cair (a página recarregou, a rede piscou), o turno continua
-rodando no servidor; uma conexão nova lê o stream do começo, para redesenhar a
-resposta, ou a partir do último evento que recebeu.
+Cada execução do agente grava os seus eventos AG-UI num Redis Stream, e a
+conexão do cliente só lê dele. Se ela cair (a página recarregou, a rede
+piscou), a execução continua no servidor; uma conexão nova lê o stream do
+começo, para redesenhar a resposta, ou a partir do último evento que recebeu.
+O AG-UI não define essa retomada: ela é do Graham, com o `id:` do SSE.
 
-Chaves no Redis, todas com TTL de 1h:
+O id do stream é o `runId` da execução. Chaves no Redis, todas com TTL de 1h:
 
-    graham:stream:{id}          os eventos do turno, em ordem
+    graham:stream:{id}          os eventos da execução, em ordem
     graham:stream:{id}:meta     a conversa e o usuário donos do stream
     graham:thread:{id}:active   o stream em andamento na conversa, se houver
 """
@@ -17,10 +18,11 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import anyio
 import redis.asyncio as aioredis
+from ag_ui.core import BaseEvent, EventType, RunErrorEvent
 
 from src.storage.cache import key
 
@@ -49,32 +51,48 @@ def _active(thread_id: UUID) -> str:
     return key("thread", thread_id, "active")
 
 
-def frame(event: str, data: dict[str, Any]) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+# Os eventos que encerram uma execução: depois deles, nada mais é gravado.
+TERMINAL = {EventType.RUN_FINISHED.value, EventType.RUN_ERROR.value}
 
 
-# O turno acabou sem chegar ao fim (o servidor parou). A interface relê a
-# conversa do Postgres, onde a mensagem ficou como interrompida.
-INTERRUPTED = frame("done", {"message_id": None, "state": "interrupted"})
+def frame(data: str, entry_id: str | None = None) -> str:
+    """Um evento no formato SSE, com o id do Redis quando ele veio do stream."""
+    return (f"id: {entry_id}\n" if entry_id else "") + f"data: {data}\n\n"
+
+
+def encode(event: BaseEvent) -> str:
+    """O evento em JSON, como o AG-UI o define (camelCase, sem campos vazios)."""
+    return event.model_dump_json(by_alias=True)
+
+
+# A execução acabou sem chegar ao fim (o servidor parou). O cliente relê a
+# conversa, onde a mensagem ficou como interrompida.
+INTERRUPTED = encode(RunErrorEvent(
+    message="O servidor parou antes do fim da resposta.", code="interrupted"
+))
 
 
 # Reserva ────────────────────────────────────────────────────────────────────
 
 
-async def reserve(redis: aioredis.Redis, thread_id: UUID, user_id: UUID) -> str:
-    """Reserva a conversa para um turno novo e devolve o id do stream.
+class RunExists(Exception):
+    """Já houve uma execução com este `runId`."""
 
-    Um turno por vez: com outro em andamento, duas respostas escreveriam no
-    mesmo caminho ao mesmo tempo.
+
+async def reserve(redis: aioredis.Redis, thread_id: UUID, user_id: UUID, run_id: UUID) -> str:
+    """Reserva a conversa para uma execução nova e devolve o id do stream.
+
+    Uma execução por vez: com outra em andamento, duas respostas escreveriam no
+    mesmo caminho ao mesmo tempo. O id é o `runId` que o cliente gerou; um que
+    já foi usado é recusado, para ninguém ler o stream de outra execução.
     """
-    stream_id = str(uuid4())
+    stream_id = str(run_id)
     meta = {"id": stream_id, "thread_id": str(thread_id), "user_id": str(user_id)}
+    if not await redis.set(_meta(stream_id), json.dumps(meta), nx=True, ex=STREAM_TTL):
+        raise RunExists
     if not await redis.set(_active(thread_id), json.dumps(meta), nx=True, ex=STREAM_TTL):
+        await redis.delete(_meta(stream_id))
         raise ThreadBusy
-    await redis.set(_meta(stream_id), json.dumps(meta), ex=STREAM_TTL)
-    # O primeiro evento já cria o stream: quem chegar para ler encontra algo.
-    await redis.xadd(_stream(stream_id), {"event": "stream", "frame": frame("stream", {"id": stream_id})})
-    await redis.expire(_stream(stream_id), STREAM_TTL)
     return stream_id
 
 
@@ -123,34 +141,39 @@ async def release(redis: aioredis.Redis, thread_id: UUID, stream_id: str) -> Non
 
 
 async def produce(
-    redis: aioredis.Redis, thread_id: UUID, stream_id: str, frames: AsyncIterator[str]
+    redis: aioredis.Redis, thread_id: UUID, stream_id: str, events: AsyncIterator[BaseEvent]
 ) -> None:
-    """Grava no stream cada evento do turno, até o `done`."""
+    """Grava no stream cada evento da execução, até o que a encerra."""
     key_ = _stream(stream_id)
     finished = False
     try:
-        async for item in frames:
-            event = item.split("\n", 1)[0].removeprefix("event: ")
-            if event == "done":
+        async for event in events:
+            if event.type.value in TERMINAL:
                 # A conversa é liberada antes de o fim ser anunciado: quem lê o
-                # `done` e manda a próxima pergunta na hora não pode encontrá-la
-                # ainda reservada. Nada do turno é gravado depois do `done`.
+                # fim e manda a próxima pergunta na hora não pode encontrá-la
+                # ainda reservada. Nada da execução é gravado depois dele.
                 await release(redis, thread_id, stream_id)
                 finished = True
-            await redis.xadd(key_, {"event": event, "frame": item})
+            await redis.xadd(key_, {"type": event.type.value, "data": encode(event)})
             await redis.expire(key_, STREAM_TTL)
     finally:
         # Cancelado (o servidor está parando) ou não, o stream precisa terminar
         # e a conversa precisa ser liberada; o escudo deixa estas escritas
         # acontecerem mesmo durante o cancelamento.
         with anyio.CancelScope(shield=True):
-            await frames.aclose()
+            await events.aclose()
             try:
                 if not finished:
                     await release(redis, thread_id, stream_id)
-                    await redis.xadd(key_, {"event": "done", "frame": INTERRUPTED})
+                    await _close(redis, stream_id)
             except Exception:  # noqa: BLE001 - o Redis caiu junto; a subida seguinte limpa
                 logger.exception("Não foi possível fechar o stream %s", stream_id)
+
+
+async def _close(redis: aioredis.Redis, stream_id: str) -> None:
+    """Encerra o stream de uma execução que parou no meio."""
+    await redis.xadd(_stream(stream_id), {"type": EventType.RUN_ERROR.value, "data": INTERRUPTED})
+    await redis.expire(_stream(stream_id), STREAM_TTL)
 
 
 def spawn(tasks: set[asyncio.Task], work: Awaitable[None]) -> asyncio.Task:
@@ -165,10 +188,11 @@ def spawn(tasks: set[asyncio.Task], work: Awaitable[None]) -> asyncio.Task:
 
 
 async def consume(redis: aioredis.Redis, stream_id: str, after: str = "0") -> AsyncIterator[str]:
-    """Os eventos do stream depois de `after`, até o `done`.
+    """Os eventos do stream depois de `after`, até o que encerra a execução.
 
-    Cada evento sai com o id do Redis no campo `id:` do SSE, que a interface
-    guarda para retomar exatamente dali se a conexão cair.
+    Cada evento sai com o id do Redis no campo `id:` do SSE, que o cliente
+    guarda para retomar exatamente dali se a conexão cair (pelo `?after=` ou
+    pelo cabeçalho `Last-Event-ID`, que o `EventSource` manda sozinho).
     """
     key_ = _stream(stream_id)
     last = after
@@ -183,8 +207,8 @@ async def consume(redis: aioredis.Redis, stream_id: str, after: str = "0") -> As
             continue
         for entry_id, fields in entries[0][1]:
             last = entry_id
-            yield f"id: {entry_id}\n{fields['frame']}"
-            if fields["event"] == "done":
+            yield frame(fields["data"], entry_id)
+            if fields["type"] in TERMINAL:
                 return
 
 
@@ -197,9 +221,7 @@ async def recover(redis: aioredis.Redis) -> int:
     async for entry in redis.scan_iter(match=key("thread", "*", "active"), count=500):
         raw = await redis.get(entry)
         if raw is not None:
-            stream_id = json.loads(raw)["id"]
-            await redis.xadd(_stream(stream_id), {"event": "done", "frame": INTERRUPTED})
-            await redis.expire(_stream(stream_id), STREAM_TTL)
+            await _close(redis, json.loads(raw)["id"])
             count += 1
         await redis.delete(entry)
     return count

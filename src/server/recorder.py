@@ -1,7 +1,7 @@
 """Grava no banco as mensagens de um turno conforme o grafo as produz."""
 
 import json
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from psycopg_pool import AsyncConnectionPool
@@ -37,6 +37,8 @@ class TurnRecorder:
         # Tool calls da última mensagem do modelo, e a linha que as guarda.
         self.calls: dict[str, dict] = {}
         self.calls_id: UUID | None = None
+        # Ids das mensagens `tool` já anunciados no stream, antes de gravadas.
+        self.result_ids: dict[str, UUID] = {}
 
     @classmethod
     async def start(cls, pool: AsyncConnectionPool, thread_id: UUID, question_id: UUID) -> "TurnRecorder":
@@ -99,6 +101,15 @@ class TurnRecorder:
             self.calls_id = self.current
         self.last, self.current = self.current, None
 
+    def result_id(self, tool_call_id: str) -> UUID:
+        """O id que a mensagem com o resultado desta chamada terá no banco.
+
+        O resultado é anunciado no stream quando a ferramenta termina, e só é
+        gravado quando o nó inteiro termina: o id é reservado na primeira vez,
+        para o anúncio e a linha concordarem.
+        """
+        return self.result_ids.setdefault(tool_call_id, uuid4())
+
     async def tools_finished(self, messages: list[ToolMessage], *, cancelled: bool = False) -> None:
         for message in messages:
             call = self.calls.get(message.tool_call_id, {})
@@ -121,6 +132,7 @@ class TurnRecorder:
                 "failed" if message.status == "error" else "completed",
                 content=message.text,
                 payload=payload,
+                message_id=self.result_id(message.tool_call_id),
             )
             if message.status != "error" and not cancelled:
                 await self._link_memory(message)
@@ -160,8 +172,11 @@ class TurnRecorder:
         )
         return self.last
 
-    async def approval_finished(self, messages: list[BaseMessage]) -> None:
-        """Grava o que saiu do nó de aprovação: os valores aprovados e os cancelamentos."""
+    async def approval_finished(self, messages: list[BaseMessage]) -> list[ToolMessage]:
+        """Grava o que saiu do nó de aprovação: os valores aprovados e os cancelamentos.
+
+        Devolve os cancelamentos, já gravados, para o stream anunciá-los.
+        """
         for message in messages:
             if isinstance(message, AIMessage):
                 # O histórico do modelo passa a ter os valores que o usuário aprovou.
@@ -171,6 +186,7 @@ class TurnRecorder:
                 self.calls = {call["id"]: call for call in message.tool_calls}
         cancelled = [message for message in messages if isinstance(message, ToolMessage)]
         await self.tools_finished(cancelled, cancelled=True)
+        return cancelled
 
     async def stop(self, state: conversations.State, error: str | None = None) -> UUID:
         """Encerra um turno que não chegou ao fim e devolve a mensagem que o fecha.

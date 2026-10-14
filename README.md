@@ -65,6 +65,7 @@ Declaradas em `pyproject.toml` e resolvidas pelo `uv`:
 | `yfinance` | Fonte dos dados de mercado |
 | `pandas` | Tratamento das séries que o `yfinance` devolve |
 | `fastapi` + `uvicorn` | Servidor HTTP e streaming SSE |
+| `ag-ui-protocol` | Tipos dos eventos e da entrada do AG-UI, o protocolo entre o agente e as interfaces |
 | `psycopg` + `psycopg-pool` | Driver e pool de conexões do Postgres |
 | `langgraph-checkpoint-postgres` | Checkpoints do grafo no Postgres |
 | `redis` | Cache dos dados de mercado e streams retomáveis |
@@ -221,15 +222,18 @@ src/
 │       ├── market.py        Entrada e saída das ferramentas de mercado (a saída normaliza o que a Yahoo devolve)
 │       └── portfolio.py     Entrada da carteira e da watchlist
 ├── server/
-│   ├── app.py               FastAPI: conversas, SSE, cartões de ticker; monta o MCP em /mcp
+│   ├── app.py               FastAPI: subida, conversas (REST) e estáticos; monta o MCP em /mcp
+│   ├── agent.py             As rotas do agente em AG-UI: executar, religar (connect) e retomar a leitura
+│   ├── agui.py              O contrato AG-UI: entrada, snapshot da conversa e interrupções
+│   ├── runs.py              Executa o grafo e traduz os eventos em AG-UI; cartões de ticker
 │   ├── auth.py              Entrada, saída e criação de conta; a sessão de cada requisição
-│   ├── keys.py              Chaves de acesso ao MCP: criar, listar e revogar
+│   ├── keys.py              Chaves de acesso ao MCP e ao agente: criar, listar e revogar
 │   ├── recorder.py          Grava as mensagens de um turno conforme o grafo as produz
-│   ├── streams.py           Turnos em segundo plano, gravados em Redis Streams retomáveis
+│   ├── streams.py           Execuções em segundo plano, gravadas em Redis Streams retomáveis
 │   └── static/
 │       ├── index.html
 │       ├── styles.css
-│       └── app.js           Cliente SSE, Markdown, histórico, ações e cartões de confirmação
+│       └── app.js           Cliente AG-UI, Markdown, histórico, ações e cartões de confirmação
 └── storage/
     ├── accounts.py          Contas e sessões
     ├── cache.py             Cliente do Redis e cache dos dados de mercado
@@ -238,7 +242,7 @@ src/
     ├── history.py           Converte o caminho da thread no histórico do modelo
     ├── memories.py          Memórias: gravação, busca híbrida, substituição e esquecimento
     ├── portfolio.py         Livro de operações, preço médio e watchlist
-    └── tokens.py            Tokens de acesso ao MCP: chaves e tokens internos
+    └── tokens.py            Tokens de acesso: chaves e tokens internos
 ```
 
 ### O grafo do agente
@@ -262,7 +266,7 @@ As ferramentas recebem o usuário e o pool de conexões pelo **contexto da execu
 
 ### Confirmação das operações
 
-As ferramentas que gravam dados não rodam sem o usuário. Quando o modelo pede uma delas, o nó `approval` chama `interrupt()`, e o grafo para com o estado salvo no checkpoint do turno. A interface mostra um cartão por operação, com os valores que o agente propôs em campos editáveis e os botões **Confirmar** e **Cancelar**. Quando todas as operações do passo estão decididas, as decisões vão para `/api/approvals`, que as valida com o mesmo schema da ferramenta e retoma o grafo com `Command(resume=...)`.
+As ferramentas que gravam dados não rodam sem o usuário. Quando o modelo pede uma delas, o nó `approval` chama `interrupt()`, e o grafo para com o estado salvo no checkpoint do turno. A execução termina com uma interrupção do AG-UI por operação, e a interface mostra um cartão para cada uma, com os valores que o agente propôs em campos editáveis e os botões **Confirmar** e **Cancelar**. Quando todas as operações do passo estão decididas, as respostas vão no `resume` de uma execução nova, que as valida com o mesmo schema da ferramenta e retoma o grafo com `Command(resume=...)`.
 
 - **A pausa fica num nó próprio, não dentro da ferramenta.** Ao retomar, o LangGraph roda de novo o nó que pausou, do começo. Num nó sem efeito colateral, repetir não muda nada; dentro de uma ferramenta, outras ferramentas do mesmo passo rodariam duas vezes.
 - **Campos de lista são fechados.** A moeda do preço e a operação da watchlist aparecem como uma lista com busca (digitar "dolar" ou "USD" filtra), sem texto livre. As opções e os rótulos vêm do schema da ferramenta (`enum` e `x-labels`), o mesmo que o modelo vê e que o servidor usa para validar; a moeda só aceita as que têm câmbio na Yahoo com o dólar e com o real.
@@ -270,7 +274,7 @@ As ferramentas que gravam dados não rodam sem o usuário. Quando o modelo pede 
 - **Só as aprovadas chegam às ferramentas.** O `ToolNode` executa todas as tool calls da última mensagem do modelo; por isso o nó de aprovação despacha uma tarefa por operação aprovada, via `Send`. As canceladas recebem uma resposta "o usuário cancelou", e o modelo explica.
 - **A correção do usuário chega ao modelo.** O resultado da ferramenta traz `user_edits`, com o valor proposto e o aprovado. Sem isso, o modelo vê um valor diferente do que o usuário disse e conclui que errou.
 - **A mensagem da pausa guarda o pedido e a decisão** (`payload.approval`), lado a lado. A mensagem do modelo fica com os valores aprovados, que são os que o histórico entrega dali em diante.
-- **Uma pergunta nova no lugar da resposta ao cartão** encerra a confirmação como `interrupted`, sem fazer as operações. Depois de um dia, os checkpoints do turno somem e a confirmação expira (`410`).
+- **Uma pergunta nova no lugar da resposta ao cartão** encerra a confirmação como `interrupted`, sem fazer as operações. O AG-UI pede que ela vá junto, com as interrupções como `cancelled`; sem isso, a execução é recusada. Depois de um dia, os checkpoints do turno somem e a confirmação expira (`expiresAt` na interrupção, `RUN_ERROR` com `code: "expired"` ao responder).
 
 ### Carteira e watchlist
 
@@ -330,6 +334,17 @@ uv run scripts/mcp_inspector.py --email user@email.com -- --cli --method tools/l
 
 O script cria uma chave temporária para a conta (só leitura, a não ser com `--escrita`), passa-a ao Inspector no cabeçalho `Authorization` e a revoga quando ele fecha; se o script cair antes, ela vence em 12 horas. Ele também pede ao Inspector a negociação automática da versão do protocolo (`--protocol-era auto`): na versão antiga, que o Inspector usaria por padrão, as skills não aparecem. Para conferir a conformidade delas com a SEP-2640: `-- --cli --method skills/list --verify`. O que vier depois de `--` vai direto ao Inspector. Precisa do Node (`npx`). Sem a chave, o Inspector tentaria o fluxo OAuth, que o servidor ainda não oferece.
 
+### AG-UI
+
+A nossa interface e o agente conversam por [AG-UI](https://docs.ag-ui.com), o protocolo aberto entre agentes e interfaces, em `/api/agent`. Só ela usa essas rotas, com o cookie da sessão: o Graham Agent fica nesta plataforma. Para fora, há o servidor MCP, com as ferramentas, e, no futuro, o A2A, para outro agente conversar com o Graham. A escolha é por um contrato padrão entre a tela e o agente (trocar um lado sem mexer no outro, usar componentes prontos e, depois, o A2UI por cima dele), não por capacidade: retomar a leitura de uma resposta, o tempo de pensamento e os cartões de ticker são do Graham, fora do protocolo. O AG-UI é um dos padrões que estão se consolidando (LangGraph, o Agent Framework da Microsoft, CopilotKit), não o único.
+
+- **O servidor é a fonte da verdade do histórico.** O `threadId` é o id da conversa, e das `messages` de uma execução o servidor usa só a pergunta nova: a última, se for do usuário e o id dela ainda não estiver gravado. O resto que o cliente reenviar é ignorado. Com o cliente como fonte da verdade, ele poderia fabricar resultados de ferramenta, falas do agente ou confirmações de operação, e o Graham grava na carteira, depende da confirmação humana e forma memória a partir dos turnos. A API de *responses* da OpenAI (`previous_response_id`) segue o mesmo meio-termo.
+- **Ids do cliente.** O cliente gera o `threadId` de uma conversa nova (o servidor a cria com ele), o `runId` de cada execução e o id da pergunta, que vira o id da linha no banco.
+- **Regerar** é uma execução com `forwardedProps: {"graham": {"regenerate": "<id da resposta>"}}`, sem inferir nada comparando o histórico enviado. **Bifurcar continua REST**: só cria a conversa, e as execuções seguintes usam o novo `threadId`. Também ficam REST a lista, a busca, renomear e apagar conversas, as chaves e a conta.
+- **Religar** (`POST /api/agent/connect`, como a rota `connect` do CopilotKit): uma execução que só ressincroniza (o `MESSAGES_SNAPSHOT` do caminho gravado e, se a conversa espera confirmação, o fim com as interrupções abertas) e, havendo uma execução em andamento, os eventos dela desde o começo. A interface redesenha toda conversa que abre assim.
+- **Os extras do Graham vão em `metadata.graham`**, que o AG-UI deixa livre em todo evento e mensagem: o estado de cada resposta, o tempo de pensamento, o gráfico, o id da mensagem que fecha o turno, os campos travados do cartão. O fluxo básico (perguntar, receber a resposta, confirmar operações) é AG-UI padrão; regerar e os extras são do Graham. Ferramentas definidas pelo cliente (`tools`), contexto e estado compartilhado são ignorados.
+- **Sem o adaptador pronto.** O `ag-ui-langgraph` passaria por cima do gravador no banco, da confirmação pelo nosso grafo e dos streams retomáveis, como o cliente MCP do LangChain passaria. Do pacote `ag-ui-protocol` vêm só os tipos.
+
 ### Conversas no banco
 
 O histórico da conversa vive nas tabelas do schema `agent`, e não no checkpointer. As mensagens formam uma **árvore**: cada uma aponta para a anterior (`parent_id`), e a thread guarda a última do caminho ativo (`head_message_id`).
@@ -346,13 +361,13 @@ Cada mensagem tem um estado: `streaming` enquanto é gerada, `awaiting_approval`
 
 ### Streams retomáveis
 
-Um turno não depende da conexão do navegador. O servidor roda o turno em segundo plano e grava cada evento SSE num **Redis Stream**; a resposta HTTP só lê desse stream. Se a conexão cair (a página recarregou, a rede piscou), o turno continua até o fim e é gravado inteiro.
+Uma execução não depende da conexão do cliente. O servidor roda a execução em segundo plano e grava cada evento AG-UI num **Redis Stream**, com o `runId` como id; a resposta HTTP só lê desse stream. Se a conexão cair (a página recarregou, a rede piscou), a execução continua até o fim e é gravada inteira. O AG-UI não define retomada (a especificação do transporte diz que um stream interrompido não pode ser reaberto); ela é do Graham, pelo padrão do SSE.
 
-- **Recarregar a página no meio de uma resposta:** `GET /api/threads/{id}` devolve o histórico até a mensagem de onde o turno parte e o `active_stream`. A interface redesenha o resto lendo o stream do começo e continua ao vivo.
-- **A conexão cair sem recarregar:** cada evento traz o id do Redis no campo `id:` do SSE. A interface reconecta em `GET /api/streams/{id}?after=<último id>` e recebe só o que faltou.
+- **Recarregar a página no meio de uma resposta:** o `connect` devolve o snapshot até a mensagem de onde a execução parte e, em seguida, os eventos dela desde o começo. A interface redesenha o resto e continua ao vivo.
+- **A conexão cair sem recarregar:** cada evento traz o id do Redis no campo `id:` do SSE. A interface reconecta em `GET /api/agent/runs/{runId}/events` com o cabeçalho `Last-Event-ID` (o que o `EventSource` manda sozinho) ou `?after=`, e recebe só o que faltou.
 - **Trocar de conversa no meio de uma resposta:** a interface só larga a leitura do stream; o turno segue no servidor. A aba de conversas marca a conversa como "respondendo" e, ao voltar a ela, a resposta é retomada como numa recarga.
-- **Um turno por conversa:** enquanto há um em andamento, outra pergunta, regeneração ou confirmação na mesma conversa recebe `409`. Conversas diferentes respondem ao mesmo tempo.
-- **O servidor parar no meio:** na subida seguinte, a mensagem em geração vira `interrupted` no Postgres, e o stream recebe um `done` final, para quem estiver lendo saber que acabou.
+- **Uma execução por conversa:** enquanto há uma em andamento, outra pergunta, regeneração ou confirmação na mesma conversa recebe `409`, assim como um `runId` repetido. Conversas diferentes respondem ao mesmo tempo.
+- **O servidor parar no meio:** na subida seguinte, a mensagem em geração vira `interrupted` no Postgres, e o stream recebe um `RUN_ERROR` com `code: "interrupted"`, para quem estiver lendo saber que acabou.
 
 Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da conversa (`graham:thread:{id}:active`).
 
@@ -370,7 +385,7 @@ Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da con
 
 **Proventos da carteira.** Sem ticker, `proventos` cruza o livro de operações com as datas ex da Yahoo: em cada pagamento, conta a quantidade que o usuário tinha no fim do pregão anterior, então uma compra feita na própria data ex não entra. Os valores são brutos, por ação ou cota.
 
-**O gráfico não passa pelo modelo.** `desempenho` usa o `response_format="content_and_artifact"` do LangChain: o modelo recebe só as métricas (cerca de 1.700 caracteres para três ativos), e a série de pontos vai no artefato da `ToolMessage`. O servidor manda o artefato à interface no evento `tool_end` e o guarda no `payload` da mensagem da ferramenta, para o gráfico voltar ao reabrir a conversa; o histórico entregue ao modelo continua sem ele.
+**O gráfico não passa pelo modelo.** `desempenho` usa o `response_format="content_and_artifact"` do LangChain: o modelo recebe só as métricas (cerca de 1.700 caracteres para três ativos), e a série de pontos vai no artefato da `ToolMessage`. O servidor manda o artefato à interface no `metadata` do `TOOL_CALL_RESULT` e o guarda no `payload` da mensagem da ferramenta, para o gráfico voltar ao reabrir a conversa; o histórico entregue ao modelo continua sem ele.
 
 As conversas ficam fora do cache de propósito. Ler o caminho de uma thread no Postgres custa cerca de 1 ms, nada perto dos segundos de um turno, quase todos à espera do modelo. Uma cópia no Redis ocuparia memória proporcional às conversas ativas e traria o risco de mostrar uma versão desatualizada, em troca de um ganho que não aparece. O cache que faz diferença para a conversa é o do provedor do modelo, que reaproveita o começo do prompt entre chamadas; como o histórico só cresce no fim, ele já se beneficia disso.
 
@@ -391,37 +406,36 @@ sequenceDiagram
     participant G as Grafo
     participant Y as Yahoo Finance
 
-    N->>S: POST /api/chat
+    N->>S: POST /api/agent (RunAgentInput)
+    S-->>N: RUN_STARTED
     S->>G: astream_events(...)
     G-->>S: on_chat_model_stream
-    S-->>N: event token
+    S-->>N: REASONING_START … REASONING_END
+    S-->>N: TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END
     G->>Y: consulta via ferramenta
-    S-->>N: event tool_start
     Y-->>G: dados
-    S-->>N: event tool_end
+    S-->>N: TOOL_CALL_RESULT
     G-->>S: on_chat_model_stream
-    S-->>N: event token
-    S-->>N: event ticker
-    S-->>N: event done
+    S-->>N: TEXT_MESSAGE_START, CONTENT…, END
+    S-->>N: CUSTOM graham.tickers
+    S-->>N: RUN_FINISHED
 ```
 
 O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callback precisou ser registrado**: toda ferramenta LangChain já emite `on_tool_start`/`on_tool_end` por conta própria, e o `astream_events` apenas pendura um ouvinte que desce por toda a árvore de execução.
 
-### Eventos SSE
+### Eventos AG-UI
 
-| Evento | Payload | Uso na interface |
+| Evento | Quando | Extras do Graham (`metadata.graham`) |
 |---|---|---|
-| `stream` | `{id}` | Primeiro evento: o stream do turno, para reconectar se a conexão cair |
-| `thread` | `{id, title}` | Guarda o id da conversa (criada na primeira pergunta) |
-| `thinking` | `{state: "start", at}` ou `{state: "end", ms}` | A linha "pensando", com o tempo desde `at`; o total vai para o "pensou por" do turno. O tempo é o intervalo entre o início da chamada ao modelo e a primeira saída dele: o raciocínio em si não é lido |
-| `token` | `{text}` | Texto da resposta, pedaço a pedaço |
-| `tool_start` | `{name, input}` | Abre o aviso "consultando…" e preenche *Argumentos* |
-| `tool_end` | `{name, output}` | Fecha o aviso e preenche *Resultados* |
-| `ticker` | cotação resumida | Um cartão de ticker |
-| `approval` | `{message_id, requests}` | Os cartões de confirmação, com título, valores e schema de cada operação |
-| `operation` | `{tool_call_id, status, message}` | O resultado de uma operação confirmada, no cartão dela |
-| `error` | `{message}` | Aviso de falha na conversa |
-| `done` | `{message_id, state}` | Fim do fluxo; a mensagem que fecha o turno recebe as ações de regerar e bifurcar |
+| `RUN_STARTED` | Início da execução, com `threadId`, `runId` e `protocolVersion` | |
+| `REASONING_START` / `REASONING_END` | Cada chamada ao modelo, até a primeira saída dele; o `timestamp` do início deixa quem reconecta continuar a contagem. Sem `REASONING_MESSAGE_*`: o raciocínio não é lido, só medido | `ms` no fim |
+| `TEXT_MESSAGE_START` / `CONTENT` / `END` | O texto, com `messageId` = a mensagem do assistente no banco | |
+| `TOOL_CALL_START` / `ARGS` / `END` | Cada chamada de ferramenta, com os argumentos transmitidos enquanto o modelo os escreve; `parentMessageId` = a mensagem do assistente | `approval: true` nas operações que pedem confirmação |
+| `TOOL_CALL_RESULT` | O resultado, com `messageId` = a mensagem da ferramenta no banco | `status` (`completed`, `failed`, `cancelled`) e `artifact` (o gráfico) |
+| `CUSTOM` `graham.tickers` | Os cartões dos tickers citados, antes do fim | |
+| `RUN_FINISHED` | Fim; com `outcome.type: "interrupt"`, a pausa para confirmação, uma interrupção por operação (`reason: "tool_call"`, `responseSchema` com `approved` e `editedArgs`, `expiresAt`) | `messageId`, a mensagem que fecha o turno; na interrupção, `name`, `args` e `locked` |
+| `RUN_ERROR` | Falha da execução; com `code`, uma entrada recusada (`pending_interrupts`, `incomplete_resume`, `invalid_args`, `expired`, `no_pending`, `no_input`) ou o servidor parou (`interrupted`) | `messageId` da resposta que falhou |
+| `MESSAGES_SNAPSHOT` | Só no `connect`: o caminho ativo da conversa | `title`, `forkedFromMessageId` e `activeRunId`; em cada mensagem, o estado, o tempo de pensamento, o gráfico e as confirmações |
 
 ### Rotas
 
@@ -431,15 +445,13 @@ O streaming vem de `astream_events(version="v2")`. Vale notar que **nenhum callb
 | `POST` | `/api/auth/login` | Recebe `{email, password}` e grava o cookie de sessão |
 | `POST` | `/api/auth/logout` | Apaga a sessão |
 | `GET` | `/api/auth/me` | O e-mail da sessão, ou `401` |
-| `POST` | `/api/chat` | Recebe `{message, thread_id?}` e devolve `text/event-stream`; sem `thread_id`, cria a conversa |
-| `POST` | `/api/regenerate` | Recebe `{thread_id, message_id}` e transmite uma nova resposta para aquele turno |
-| `POST` | `/api/approvals` | Recebe `{thread_id, message_id, decisions}` e transmite a continuação do turno pausado |
+| `POST` | `/api/agent` | AG-UI: recebe um `RunAgentInput` (pergunta nova, `resume` ou regeneração) e transmite a execução em SSE |
+| `POST` | `/api/agent/connect` | Recebe `{threadId}`: o snapshot da conversa e a execução em andamento, se houver |
+| `GET` | `/api/agent/runs/{runId}/events` | Retoma a leitura de uma execução depois do `Last-Event-ID` (ou `?after=`) |
 | `POST` | `/api/threads/{id}/fork` | Recebe `{message_id}` e devolve a nova conversa |
 | `GET` | `/api/threads` | As conversas do usuário (até 100), da atividade mais recente à mais antiga, com o status `streaming` ou `awaiting_approval`; com `?q=`, só as que têm o texto no título ou nas mensagens, com o trecho encontrado |
 | `PATCH` | `/api/threads/{id}` | Recebe `{title}` e renomeia a conversa |
 | `DELETE` | `/api/threads/{id}` | Apaga a conversa; `409` se houver resposta em andamento |
-| `GET` | `/api/threads/{id}` | O caminho ativo da conversa, agrupado em turnos |
-| `GET` | `/api/streams/{id}` | Reconecta a um turno: os eventos depois de `?after=`, ou todos |
 | `GET` | `/api/keys` | As chaves de acesso ativas (sem o valor) e a URL do servidor MCP |
 | `POST` | `/api/keys` | Recebe `{name, can_write}` e cria uma chave; o valor vem só nesta resposta |
 | `DELETE` | `/api/keys/{id}` | Revoga a chave |
@@ -467,6 +479,6 @@ Os cartões não são gravados: ao reabrir uma conversa, as respostas e as consu
 
 **Nós assíncronos são obrigatórios.** `call_model` usa `await LLM.ainvoke(...)`. Um `invoke()` síncrono roda numa thread e perde a propagação dos callbacks: os eventos `on_chat_model_stream` simplesmente não chegam, e o streaming morre silenciosamente.
 
-**`NaN` não é JSON.** A Yahoo devolve `NaN` onde o dado não se aplica (o BTC-USD não tem fechamento anterior). Como `NaN` é um `float` válido em Python mas não existe no JSON, ele é convertido em `None` já na origem, no helper `_safe`, e há uma segunda rede em `_json_safe`, na serialização dos eventos SSE.
+**`NaN` não é JSON.** A Yahoo devolve `NaN` onde o dado não se aplica (o BTC-USD não tem fechamento anterior). Como `NaN` é um `float` válido em Python mas não existe no JSON, ele é convertido em `None` já na origem, no helper `_safe`. Os eventos AG-UI são modelos Pydantic, que serializam `NaN` como `null`: uma segunda rede, sem código nosso.
 
 **O front-end não tem dependências.** O Markdown das respostas é renderizado por uma função de ~40 linhas em `app.js`, em vez de uma biblioteca de CDN. Tudo é escapado antes de virar HTML, então nada que o modelo ou a Yahoo devolvam pode injetar markup.

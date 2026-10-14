@@ -1,5 +1,5 @@
-// Graham — cliente da interface: envia perguntas e desenha os eventos SSE
-// que chegam do servidor.
+// Graham — cliente da interface: conversa com o agente pelo AG-UI e desenha
+// os eventos que chegam do servidor.
 
 const app = document.getElementById("app");
 const thread = document.getElementById("thread");
@@ -26,8 +26,8 @@ function leaveView() {
 
 /* ─────────────────────────────── Identidade da conversa ─────────────────── */
 
-// A conversa é criada pelo servidor na primeira pergunta; o navegador só
-// guarda o id para reabri-la depois.
+// O id da conversa nasce aqui, na primeira pergunta (o AG-UI espera do
+// cliente), e o servidor a cria com ele; o navegador o guarda para reabri-la.
 const THREAD_KEY = "graham.thread_id";
 
 function storeThreadId(id) {
@@ -1459,6 +1459,17 @@ function toolBlock(toolName, input) {
       dot.remove();
       text.textContent = `${toolLabel(toolName)} · consulta interrompida`;
     },
+    // Os argumentos chegam aos pedaços, depois do anúncio da consulta.
+    update(value) {
+      text.textContent = workingLabel(toolName, value);
+      args.set(value);
+    },
+    fail(message) {
+      bar.classList.remove("is-working");
+      dot.remove();
+      text.textContent = `${toolLabel(toolName)} · consulta falhou`;
+      result.set(message);
+    },
   };
 }
 
@@ -1593,13 +1604,23 @@ function toolRun() {
       refresh();
 
       return {
+        update(value) {
+          note.update(value);
+          entry.input = value;
+          refresh();
+        },
         finish(output, artifact = null) {
           const view = note.finish(output, artifact);
           entry.state = "done";
           if (view) {
-            views.push({ el: view, title: viewTitle(name, input, output) });
+            views.push({ el: view, title: viewTitle(name, entry.input, output) });
             placeViews();
           }
+          refresh();
+        },
+        fail(message) {
+          note.fail(message);
+          entry.state = "done";
           refresh();
         },
         abort() {
@@ -1614,9 +1635,10 @@ function toolRun() {
 
 /* ─────────────────────────────── Confirmação ────────────────────────────── */
 
-// Cada operação que grava dados chega como um cartão: o usuário confere,
-// corrige se quiser e confirma ou cancela. Quando todas as operações do passo
-// estão decididas, as decisões vão juntas ao servidor e o turno continua.
+// Cada operação que grava dados chega como uma interrupção do AG-UI e vira um
+// cartão: o usuário confere, corrige se quiser e confirma ou cancela. Quando
+// todas as operações do passo estão decididas, as respostas vão juntas, no
+// `resume` de uma execução nova, e o turno continua.
 
 // Cartões por tool call, para o resultado da operação encontrar o seu.
 const approvalCards = new Map();
@@ -2002,9 +2024,11 @@ function approvalCard(request, onDecide) {
 
 // `stored` vem do histórico: decisões e resultados já gravados. Sem ele, o
 // grupo acabou de chegar pelo stream e espera o usuário.
-function approvalGroup(body, messageId, requests, stored = null) {
+function approvalGroup(requests, stored = null) {
   const group = document.createElement("div");
   group.className = "approval-group";
+  // As interrupções que o grupo responde: uma pergunta nova as cancela.
+  group.interruptIds = requests.map((request) => request.interrupt_id);
 
   const note = document.createElement("div");
   note.className = "approval-error";
@@ -2014,7 +2038,7 @@ function approvalGroup(body, messageId, requests, stored = null) {
   group.classList.toggle("is-pending", pending);
 
   const cards = requests.map((request) => approvalCard(request, () => {
-    if (cards.every((card) => card.decision)) submitApprovals(group, note, body, messageId, cards);
+    if (cards.every((card) => card.decision)) submitApprovals(group, note, cards);
   }));
   for (const card of cards) group.append(card.root);
   group.append(note);
@@ -2035,23 +2059,27 @@ function approvalGroup(body, messageId, requests, stored = null) {
   return group;
 }
 
-async function submitApprovals(group, note, body, messageId, cards) {
+async function submitApprovals(group, note, cards) {
   // O cartão aparece pouco antes do fim do stream; um clique rápido espera ele fechar.
   while (streaming) await new Promise((resolve) => setTimeout(resolve, 100));
   group.classList.remove("is-pending");
   note.hidden = true;
 
-  const decisions = cards.map((card) => ({
-    tool_call_id: card.request.tool_call_id,
-    approved: card.decision === "approved",
-    args: card.decision === "approved" ? card.values() : null,
+  // No padrão do AG-UI: `approved` e, confirmada, `editedArgs` com os valores
+  // inteiros como o usuário os deixou.
+  const resume = cards.map((card) => ({
+    interruptId: card.request.interrupt_id,
+    status: "resolved",
+    payload: card.decision === "approved" ? { approved: true, editedArgs: card.values() } : { approved: false },
   }));
 
-  await streamTurn("/api/approvals", { thread_id: threadId, message_id: messageId, decisions }, body, {
-    onHttpError(status, detail) {
+  const body = group.closest(".turn-body");
+  await runAgent({ resume }, () => body, {
+    onRefused(code, message) {
+      if (code === "http_401") return false;
       note.hidden = false;
-      note.textContent = detail || `O servidor respondeu ${status}.`;
-      if (status === 422) {
+      note.textContent = message || "Não foi possível enviar a confirmação.";
+      if (code === "invalid_args") {
         // Valor recusado: os cartões voltam a ser editáveis para a correção.
         group.classList.add("is-pending");
         for (const card of cards) {
@@ -2062,13 +2090,17 @@ async function submitApprovals(group, note, body, messageId, cards) {
       } else {
         for (const card of cards) card.setStatus("expired");
       }
+      return true;
     },
   });
 }
 
 // Uma pergunta nova no lugar da resposta ao cartão encerra a confirmação.
-function expirePendingApprovals() {
+// Devolve as interrupções canceladas, que vão no `resume` da pergunta.
+function abandonPendingApprovals() {
+  const resume = [];
   for (const group of thread.querySelectorAll(".approval-group.is-pending")) {
+    resume.push(...group.interruptIds.map((interruptId) => ({ interruptId, status: "cancelled" })));
     group.classList.remove("is-pending");
     for (const card of group.querySelectorAll(".approval-card")) {
       card.querySelectorAll("input, select").forEach((control) => { control.disabled = true; });
@@ -2077,6 +2109,7 @@ function expirePendingApprovals() {
       card.querySelector(".approval-status").textContent = OPERATION_STATUS.expired;
     }
   }
+  return resume;
 }
 
 /* ─────────────────────────── Cartões de ticker ──────────────────────────── */
@@ -2319,107 +2352,204 @@ function forkNote() {
   return note;
 }
 
+/* ─────────────────────────────────── AG-UI ──────────────────────────────── */
+
+// O agente fala AG-UI: cada execução é um POST com o `RunAgentInput` e volta
+// como eventos SSE. O servidor guarda o histórico; daqui vai só a pergunta nova
+// (ou a regeneração, ou a resposta à confirmação). Os extras do Graham chegam
+// em `metadata.graham` de cada evento e mensagem.
+
+// O AG-UI espera do cliente os ids da conversa, da execução e da mensagem.
+// `crypto.randomUUID` só existe em contexto seguro (https ou localhost).
+function newId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function extras(item) {
+  return item?.metadata?.graham || {};
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// O retorno de uma ferramenta, para o detalhe da consulta: um retorno enorme
+// travaria a tela, então vira um aviso.
+const MAX_TOOL_PREVIEW = 20_000;
+
+function toolOutput(content) {
+  if (typeof content === "string" && content.length > MAX_TOOL_PREVIEW) {
+    return { aviso: "Resultado longo demais para exibir por inteiro.", caracteres: content.length };
+  }
+  return parseJson(content) ?? content;
+}
+
+// O cartão de confirmação a partir de uma interrupção do AG-UI.
+function approvalRequest(interrupt) {
+  const meta = extras(interrupt);
+  return {
+    interrupt_id: interrupt.id,
+    tool_call_id: interrupt.toolCallId,
+    name: meta.name,
+    args: meta.args || {},
+    locked: meta.locked || [],
+    title: interrupt.message,
+    schema: interrupt.responseSchema.properties.editedArgs,
+  };
+}
+
 /* ─────────────────────────────── Histórico gravado ──────────────────────── */
 
-function renderStoredTurn(turn) {
-  if (turn.role === "user") {
-    addTurn("user", "Você").textContent = turn.content;
-    return;
+// Agrupa as mensagens em turnos: cada pergunta sozinha e, depois dela, as
+// mensagens do assistente e das ferramentas até a pergunta seguinte.
+function snapshotTurns(messages) {
+  const turns = [];
+  for (const message of messages) {
+    if (message.role === "user" || !turns.length || turns.at(-1)[0].role === "user") turns.push([message]);
+    else turns.at(-1).push(message);
+  }
+  return turns;
+}
+
+// `live`: uma execução em andamento continua este turno (a retomada depois de
+// uma confirmação); ele ainda não terminou, então fica sem regerar nem bifurcar.
+function renderStoredTurn(messages, live = false) {
+  const first = messages[0];
+  if (first.role === "user") {
+    addTurn("user", "Você").textContent = first.content;
+    return null;
   }
 
   const body = addTurn("agent", "Graham Agent");
+  const results = new Map();
+  for (const message of messages) {
+    if (message.role === "tool") results.set(message.toolCallId, message);
+  }
+  // O resultado de cada operação confirmada ou cancelada, por tool call.
+  const operations = {};
+  for (const [id, message] of results) {
+    const status = extras(message).status;
+    operations[id] = { status, message: status === "failed" ? message.content : null };
+  }
+
   let run = null;
-  for (const block of turn.blocks) {
-    if (block.type === "text") {
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    if (message.content) {
       run = null;
       const text = document.createElement("div");
       text.className = "answer-block";
-      text.innerHTML = renderMarkdown(block.text);
+      text.innerHTML = renderMarkdown(message.content);
       body.append(text);
-    } else if (block.type === "approval") {
-      run = null;
-      body.append(approvalGroup(body, block.message_id, block.requests, block));
-    } else {
+    }
+    for (const call of message.toolCalls || []) {
+      // As operações aparecem no cartão de confirmação, não como consulta.
+      if (extras(call).approval) continue;
       if (!run) {
         run = toolRun();
         body.append(run.root);
       }
-      const note = run.add(block.name, block.input);
-      if (block.done) note.finish(block.output, block.artifact);
-      else note.abort();
+      const note = run.add(call.function.name, parseJson(call.function.arguments));
+      const result = results.get(call.id);
+      if (!result) note.abort();
+      else if (extras(result).status === "failed") note.fail(result.content);
+      else note.finish(toolOutput(result.content), extras(result).artifact);
+    }
+    const approval = extras(message).approval;
+    if (approval) {
+      run = null;
+      body.append(approvalGroup(approval.interrupts.map(approvalRequest), {
+        state: extras(message).state,
+        decisions: approval.decisions,
+        results: operations,
+      }));
     }
   }
-  // Enquanto espera a confirmação ou segue gerando, o turno não terminou: sem
-  // regerar nem bifurcar ainda.
-  body.closest(".turn").dataset.messageId = turn.id;
-  if (turn.state !== "awaiting_approval" && turn.state !== "streaming") {
-    addTurnActions(body, turn.id, turn.state, turn.thinking_ms);
+
+  // Um turno que parou entre uma ferramenta e outra, sem a mensagem que o
+  // fecha, também conta como interrompido — inclusive logo depois de uma
+  // confirmação, antes de as operações rodarem.
+  const last = messages.at(-1);
+  const finished = last.role === "assistant" && !last.toolCalls?.length;
+  let state = finished ? extras(last).state : "interrupted";
+  if (extras(last).approval && state === "completed") state = "interrupted";
+  const thinkingMs = messages.reduce((total, message) => total + (extras(message).thinkingMs || 0), 0);
+
+  body.closest(".turn").dataset.messageId = last.id;
+  if (!live && state !== "awaiting_approval") addTurnActions(body, last.id, state, thinkingMs);
+  return body;
+}
+
+// Redesenha a conversa a partir do `MESSAGES_SNAPSHOT` e devolve onde a
+// execução em andamento, se houver, continua escrevendo.
+function renderSnapshot(event) {
+  const { forkedFromMessageId, activeRunId } = extras(event);
+  clearConversation();
+  if (!event.messages.length) {
+    showEmpty();
+    return null;
   }
+  showConversation();
+  const turns = snapshotTurns(event.messages);
+  let lastBody = null;
+  turns.forEach((messages, index) => {
+    const live = Boolean(activeRunId) && index === turns.length - 1;
+    lastBody = renderStoredTurn(messages, live);
+    if (messages.at(-1).id === forkedFromMessageId) thread.append(forkNote());
+  });
+  window.scrollTo({ top: document.body.scrollHeight });
+  return lastBody;
 }
 
 async function openThread(id) {
   const view = currentView;
-  const response = await fetch(`/api/threads/${id}`);
-  if (view !== currentView) return;
-  if (response.status === 401) {
-    signedOut();
-    return;
-  }
-  if (!response.ok) {
-    // Conversa de outra sessão ou apagada: começa do zero.
-    threadId = null;
-    storeThreadId(null);
-    showEmpty();
-    return;
-  }
-
-  const data = await response.json();
-  if (view !== currentView) return;
-  threadId = data.id;
-  storeThreadId(data.id);
-  markCurrentThread();
-
-  clearConversation();
-  if (!data.turns.length) {
-    showEmpty();
-    return;
-  }
-
-  showConversation();
-  for (const turn of data.turns) {
-    renderStoredTurn(turn);
-    if (turn.id === data.forked_from_message_id) thread.append(forkNote());
-  }
-  window.scrollTo({ top: document.body.scrollHeight });
-
-  // Um turno ainda rodando no servidor: o histórico veio até a mensagem de onde
-  // ele parte, e o resto é redesenhado lendo o stream do começo. Depois de uma
-  // confirmação, a continuação entra no mesmo turno; senão, num turno novo.
-  if (data.active_stream) {
-    const { id: liveId, after_message_id: after } = data.active_stream;
-    const continued = thread.querySelector(`.turn-agent[data-message-id="${after}"] .turn-body`);
-    await streamTurn(`/api/streams/${liveId}`, null, continued || addTurn("agent", "Graham Agent"));
-  }
+  // Religa a conversa: o snapshot gravado e, se houver, a execução em
+  // andamento, que continua o último turno ou abre um novo.
+  let continued = null;
+  await streamTurn(
+    (signal) => fetch("/api/agent/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: id }),
+      signal,
+    }),
+    () => continued || addTurn("agent", "Graham Agent"),
+    {
+      onSnapshot(event) {
+        if (view !== currentView) return;
+        threadId = id;
+        storeThreadId(id);
+        markCurrentThread();
+        continued = renderSnapshot(event);
+      },
+      onRefused(code) {
+        if (view !== currentView) return true;
+        if (code === "http_401") return false;
+        // Conversa de outra sessão ou apagada: começa do zero.
+        threadId = null;
+        storeThreadId(null);
+        showEmpty();
+        return true;
+      },
+    },
+  );
 }
 
 /* ─────────────────────────────────── Envio ──────────────────────────────── */
 
-// Transmite um turno do agente para dentro de `body`: serve a uma pergunta
-// nova, a uma resposta regerada, à continuação depois da confirmação e à
-// reconexão a um turno em andamento (`payload` nulo, um GET no stream).
-// `onHttpError` recebe as recusas do servidor em vez de virarem aviso de erro.
-async function streamTurn(url, payload, body, { onHttpError } = {}) {
-  // Trocar de conversa larga esta leitura (o turno segue no servidor); daí em
-  // diante, ela não mexe mais na tela nem no estado, que já são de outra.
-  const reading = new AbortController();
-  currentReading = reading;
-  const detached = () => reading.signal.aborted;
-
-  setStreaming(true);
-  scrollToEnd();
-
-  // A resposta é montada em blocos na ordem em que acontece: o modelo pode
-  // falar, consultar ferramentas e voltar a falar.
+// Desenha uma execução do agente dentro de `body`, evento por evento. A
+// resposta é montada em blocos na ordem em que acontece: o modelo pode falar,
+// consultar ferramentas e voltar a falar.
+function liveTurn(body, onRefused) {
   let block = null;
   let blockText = "";
 
@@ -2430,20 +2560,12 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
   let thinking = null;
   let thinkingMs = 0;
 
-  // O agente dispara várias ferramentas de uma vez, então cada aviso pendente
-  // é guardado por nome — a lista cobre o caso da mesma ferramenta repetida.
-  const pendingNotes = new Map();
+  // As consultas em andamento, por tool call, com os argumentos que chegam aos
+  // pedaços; as operações, que viram cartões na pausa, ficam de fora.
+  const calls = new Map();
 
   // Cartões dos tickers citados, enviados depois que a resposta termina.
   const tickers = [];
-
-  // Chega no evento `done`: a mensagem que fecha o turno e como ele terminou.
-  let outcome = null;
-
-  // O id do stream chega no primeiro evento, e cada evento traz o seu: com os
-  // dois, a leitura retoma exatamente de onde parou se a conexão cair.
-  let streamId = null;
-  let lastEventId = null;
 
   const openBlock = () => {
     if (!block) {
@@ -2462,70 +2584,179 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
     blockText = "";
   };
 
-  const handle = (name, data) => {
-    if (name === "stream") {
-      streamId = data.id;
-      refreshThreadList(); // o indicador de "respondendo" acende
+  const turn = {
+    // Como a execução terminou: a mensagem que fecha o turno e o estado dele.
+    outcome: null,
 
-    } else if (name === "thread") {
-      threadId = data.id;
-      storeThreadId(data.id);
-      refreshThreadList();
+    handle(event) {
+      switch (event.type) {
+        case "RUN_STARTED":
+          refreshThreadList(); // o indicador de "respondendo" acende
+          break;
 
-    } else if (name === "thinking") {
+        case "REASONING_START":
+          thinking?.stop();
+          closeBlock();
+          // A hora de início vem do servidor: quem reconecta no meio continua a contagem.
+          thinking = thinkingNote(event.timestamp || Date.now());
+          body.append(thinking.el);
+          scrollToEnd();
+          break;
+
+        case "REASONING_END":
+          thinking?.stop();
+          thinking = null;
+          thinkingMs += extras(event).ms || 0;
+          break;
+
+        case "TEXT_MESSAGE_START":
+          closeBlock();
+          openBlock();
+          break;
+
+        case "TEXT_MESSAGE_CONTENT":
+          openBlock();
+          blockText += event.delta;
+          block.innerHTML = renderMarkdown(blockText);
+          scrollToEnd();
+          break;
+
+        case "TEXT_MESSAGE_END":
+          closeBlock();
+          break;
+
+        case "TOOL_CALL_START": {
+          if (extras(event).approval) break;
+          // O que já foi dito fica fechado acima do aviso.
+          closeBlock();
+          if (!run) {
+            run = toolRun();
+            body.append(run.root);
+          }
+          calls.set(event.toolCallId, { note: run.add(event.toolCallName, null), args: "" });
+          scrollToEnd();
+          break;
+        }
+
+        case "TOOL_CALL_ARGS": {
+          const call = calls.get(event.toolCallId);
+          if (call) call.args += event.delta;
+          break;
+        }
+
+        case "TOOL_CALL_END": {
+          const call = calls.get(event.toolCallId);
+          if (call) call.note.update(parseJson(call.args));
+          break;
+        }
+
+        case "TOOL_CALL_RESULT": {
+          const { status, artifact } = extras(event);
+          const call = calls.get(event.toolCallId);
+          if (call) {
+            if (status === "failed") call.note.fail(event.content);
+            else call.note.finish(toolOutput(event.content), artifact);
+            calls.delete(event.toolCallId);
+          } else {
+            approvalCards.get(event.toolCallId)?.setStatus(status, status === "failed" ? event.content : null);
+          }
+          break;
+        }
+
+        case "CUSTOM":
+          if (event.name === "graham.tickers") tickers.push(...event.value);
+          break;
+
+        case "RUN_FINISHED": {
+          const interrupts = event.outcome?.type === "interrupt" ? event.outcome.interrupts : null;
+          turn.outcome = {
+            messageId: extras(event).messageId,
+            state: interrupts ? "awaiting_approval" : "completed",
+          };
+          if (interrupts) {
+            closeBlock();
+            run = null;
+            body.append(approvalGroup(interrupts.map(approvalRequest)));
+            scrollToEnd();
+          }
+          break;
+        }
+
+        case "RUN_ERROR":
+          // Com `code`, o servidor recusou a entrada sem executar nada (ou parou
+          // no meio, `interrupted`); sem ele, a execução falhou.
+          turn.outcome = {
+            messageId: extras(event).messageId,
+            state: event.code === "interrupted" ? "interrupted" : "failed",
+            refused: Boolean(event.code) && event.code !== "interrupted",
+          };
+          if (!(turn.outcome.refused && onRefused?.(event.code, event.message))) {
+            body.append(errorNote(event.message));
+          }
+          break;
+      }
+    },
+
+    finish() {
       thinking?.stop();
-      thinking = null;
-      if (data.state === "start") {
-        closeBlock();
-        thinking = thinkingNote(data.at);
-        body.append(thinking.el);
-        scrollToEnd();
-      } else {
-        thinkingMs += data.ms || 0;
-      }
-
-    } else if (name === "token") {
-      openBlock();
-      blockText += data.text;
-      block.innerHTML = renderMarkdown(blockText);
-      scrollToEnd();
-
-    } else if (name === "tool_start") {
-      // O que já foi dito fica fechado acima do aviso.
       closeBlock();
-
-      if (!run) {
-        run = toolRun();
-        body.append(run.root);
+      if (tickers.length) body.append(tickerPanel(tickers));
+      // Uma ferramenta que nunca respondeu não pode ficar pulsando para sempre.
+      for (const call of calls.values()) call.note.abort();
+      const outcome = turn.outcome;
+      if (outcome?.messageId && outcome.state !== "awaiting_approval" && outcome.state !== "interrupted") {
+        addTurnActions(body, outcome.messageId, outcome.state, thinkingMs);
       }
-      const note = run.add(data.name, data.input);
+    },
+  };
+  return turn;
+}
 
-      const queue = pendingNotes.get(data.name) || [];
-      queue.push(note);
-      pendingNotes.set(data.name, queue);
-      scrollToEnd();
+// Transmite uma execução: uma pergunta nova, uma resposta regerada, a
+// continuação depois da confirmação ou a religação a uma conversa (`connect`).
+// `start(signal)` faz o pedido; `target()` diz em que turno a execução escreve,
+// e só é chamado quando ela começa. `onRefused(code, message)` recebe as
+// recusas (HTTP, como `http_409`, ou `RUN_ERROR` com código) e devolve se as
+// tratou; `onSnapshot` recebe o `MESSAGES_SNAPSHOT` de um `connect`.
+async function streamTurn(start, target, { onRefused, onSnapshot } = {}) {
+  // Trocar de conversa larga esta leitura (a execução segue no servidor); daí
+  // em diante, ela não mexe mais na tela nem no estado, que já são de outra.
+  const reading = new AbortController();
+  currentReading = reading;
+  const detached = () => reading.signal.aborted;
 
-    } else if (name === "tool_end") {
-      pendingNotes.get(data.name)?.shift()?.finish(data.output, data.artifact);
+  // Uma execução pedida daqui trava o envio já no clique; num `connect`, só se
+  // houver uma execução em andamento.
+  if (!onSnapshot) {
+    setStreaming(true);
+    scrollToEnd();
+  }
 
-    } else if (name === "approval") {
-      closeBlock();
-      run = null;
-      body.append(approvalGroup(body, data.message_id, data.requests));
-      scrollToEnd();
+  // A execução que esta leitura desenha, criada no RUN_STARTED dela. Num
+  // `connect`, a primeira execução só ressincroniza: o snapshot e o fim.
+  let turn = null;
+  let body = null;
+  let syncing = Boolean(onSnapshot);
 
-    } else if (name === "operation") {
-      approvalCards.get(data.tool_call_id)?.setStatus(data.status, data.message);
+  // O id da execução e o do último evento: com os dois, a leitura retoma
+  // exatamente de onde parou se a conexão cair.
+  let runId = null;
+  let lastEventId = null;
 
-    } else if (name === "ticker") {
-      tickers.push(data);
-
-    } else if (name === "error") {
-      body.append(errorNote(data.message));
-
-    } else if (name === "done") {
-      outcome = data;
+  const dispatch = (event) => {
+    if (syncing) {
+      if (event.type === "MESSAGES_SNAPSHOT") onSnapshot(event);
+      else if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") syncing = false;
+      return;
     }
+    if (!turn) {
+      body = target();
+      turn = liveTurn(body, onRefused);
+      setStreaming(true);
+      scrollToEnd();
+    }
+    if (event.type === "RUN_STARTED") runId = event.runId;
+    turn.handle(event);
   };
 
   // Lê um corpo SSE até ele acabar; lança se a conexão cair no meio.
@@ -2546,35 +2777,26 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
         const frame = buffer.slice(0, split);
         buffer = buffer.slice(split + 2);
 
-        const id = frame.match(/^id:\s*(.+)$/m)?.[1];
-        if (id) lastEventId = id;
-
         // Comentários (`: ping`) só mantêm a conexão viva.
-        const name = frame.match(/^event:\s*(.+)$/m)?.[1];
         const raw = frame.match(/^data:\s*(.*)$/m)?.[1];
-        if (!name || raw === undefined) continue;
+        if (raw === undefined) continue;
         if (detached()) return;
 
-        let data;
-        try {
-          data = JSON.parse(raw);
-        } catch {
-          continue; // um frame malformado não derruba o resto da resposta
-        }
-        handle(name, data);
+        const event = parseJson(raw);
+        if (!event?.type) continue; // um frame malformado não derruba o resto da resposta
+        const id = frame.match(/^id:\s*(.+)$/m)?.[1];
+        if (id) lastEventId = id;
+        dispatch(event);
       }
     }
   };
 
-  try {
-    let response = await fetch(url, payload === null ? { signal: reading.signal } : {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: reading.signal,
-    });
+  const ended = () => Boolean(turn?.outcome);
 
-    if (response.status === 401) {
+  try {
+    let response = await start(reading.signal);
+
+    if (response.status === 401 && !onRefused?.("http_401")) {
       signedOut();
       return;
     }
@@ -2585,22 +2807,22 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
       } catch {
         /* sem corpo legível */
       }
-      if (onHttpError) {
-        onHttpError(response.status, detail);
-        return;
-      }
-      throw new Error(detail || `O servidor respondeu ${response.status}.`);
+      if (onRefused?.(`http_${response.status}`, detail)) return;
+      throw new Error(typeof detail === "string" ? detail : `O servidor respondeu ${response.status}.`);
     }
 
-    // O turno roda no servidor independente desta conexão. Se ela cair, a
-    // leitura reconecta ao stream e continua do último evento recebido.
-    for (let attempt = 0; !outcome && !detached(); attempt++) {
+    // A execução roda no servidor independente desta conexão. Se ela cair, a
+    // leitura reconecta e continua do último evento recebido.
+    for (let attempt = 0; !detached(); attempt++) {
       if (attempt > 0) {
-        if (!streamId || attempt > 3) break;
+        if (!runId || ended() || attempt > 3) break;
         await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
         if (detached()) break;
         try {
-          response = await fetch(`/api/streams/${streamId}?after=${lastEventId || "0"}`, { signal: reading.signal });
+          response = await fetch(`/api/agent/runs/${runId}/events`, {
+            headers: lastEventId ? { "Last-Event-ID": lastEventId } : {},
+            signal: reading.signal,
+          });
         } catch {
           continue;
         }
@@ -2608,50 +2830,82 @@ async function streamTurn(url, payload, body, { onHttpError } = {}) {
       }
       try {
         await read(response);
+        // Sem execução viva (um `connect` só de snapshot), o fim do corpo é o fim.
+        if (!turn || ended()) break;
       } catch {
         /* a conexão caiu; a próxima volta reconecta */
       }
     }
-    if (!outcome && !detached()) throw new Error("A conexão caiu antes do fim da resposta.");
+    if (turn && !ended() && !detached()) throw new Error("A conexão caiu antes do fim da resposta.");
   } catch (error) {
-    if (!detached()) body.append(errorNote(`Não foi possível completar a consulta. ${error.message}`));
+    if (!detached()) {
+      body = body || target();
+      body.append(errorNote(`Não foi possível completar a consulta. ${error.message}`));
+    }
   } finally {
     if (currentReading === reading) currentReading = null;
-    thinking?.stop();
     if (!detached()) {
-      closeBlock();
-      if (tickers.length) body.append(tickerPanel(tickers));
-      // Uma ferramenta que nunca respondeu não pode ficar pulsando para sempre.
-      for (const queue of pendingNotes.values()) {
-        for (const note of queue) note.abort();
-      }
-      if (outcome?.message_id && outcome.state !== "awaiting_approval") {
-        addTurnActions(body, outcome.message_id, outcome.state, thinkingMs);
-      }
+      turn?.finish();
       setStreaming(false);
       input.focus();
-      refreshThreadList();
+      if (turn) refreshThreadList();
     }
   }
   if (detached()) return;
 
-  // Sem mensagem no `done`, o servidor parou no meio do turno: o que ficou
-  // gravado (e marcado como interrompido) está no Postgres.
-  if (outcome && !outcome.message_id && threadId) await openThread(threadId);
+  // O servidor parou no meio da execução: o que ficou gravado (e marcado como
+  // interrompido) está no banco.
+  if (turn?.outcome?.state === "interrupted" && threadId) await openThread(threadId);
+}
+
+// Uma execução nova na conversa atual. Os campos que faltam são os padrões do
+// `RunAgentInput`: o servidor ignora ferramentas, contexto e estado do cliente.
+function runAgent(input, target, options) {
+  const payload = {
+    threadId,
+    runId: newId(),
+    messages: [],
+    tools: [],
+    context: [],
+    state: null,
+    forwardedProps: {},
+    ...input,
+  };
+  return streamTurn(
+    (signal) => fetch("/api/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    }),
+    target,
+    options,
+  );
 }
 
 async function ask(question) {
   if (streaming) return;
   showConversation();
-  expirePendingApprovals();
+  // Uma pergunta nova no lugar da resposta ao cartão encerra a confirmação; o
+  // AG-UI pede que ela vá cancelada junto.
+  const resume = abandonPendingApprovals();
 
+  // A conversa nasce aqui: o id é do cliente, e o servidor a cria com ele.
+  if (!threadId) {
+    threadId = newId();
+    storeThreadId(threadId);
+  }
   addTurn("user", "Você").textContent = question;
   const body = addTurn("agent", "Graham Agent");
-  await streamTurn("/api/chat", { message: question, thread_id: threadId }, body);
+  await runAgent(
+    { messages: [{ id: newId(), role: "user", content: question }], ...(resume.length ? { resume } : {}) },
+    () => body,
+  );
 }
 
 async function regenerate(turn) {
   if (streaming) return;
+  const resume = abandonPendingApprovals();
 
   // A nova resposta substitui esta e tudo o que veio depois dela: no servidor,
   // ela nasce como irmã desta, e o caminho ativo passa a seguir por ela.
@@ -2664,7 +2918,10 @@ async function regenerate(turn) {
   }
 
   const body = addTurn("agent", "Graham Agent");
-  await streamTurn("/api/regenerate", { thread_id: threadId, message_id: messageId }, body);
+  await runAgent(
+    { forwardedProps: { graham: { regenerate: messageId } }, ...(resume.length ? { resume } : {}) },
+    () => body,
+  );
 }
 
 async function fork(turn) {
