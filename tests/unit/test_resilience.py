@@ -1,9 +1,29 @@
-"""Novas tentativas nas fontes externas, só para as falhas passageiras."""
+"""Texto de terceiros limpo antes do modelo, e novas tentativas nas fontes externas."""
 
 import httpx
 import pytest
 
 from src.tools import market
+from src.tools.schemas.market import NewsArticle, third_party_text
+
+
+def test_caracteres_invisiveis_e_de_controle_saem_do_texto_de_terceiros():
+    # Largura zero, inversão de direção e controle: invisíveis na tela, legíveis pelo modelo.
+    title = "Petrobras​ anuncia‮ dividendos\x07\n\n  extraordinários"
+
+    assert third_party_text(title, 300) == "Petrobras anuncia dividendos extraordinários"
+
+
+def test_texto_de_terceiros_tem_tamanho_limitado():
+    text = third_party_text("a" * 1000, 300)
+
+    assert len(text) == 300 and text.endswith("…")
+
+
+def test_noticia_chega_limpa_ao_modelo():
+    article = NewsArticle(title="Título⁠ escondido", summary="  ​  ", publisher="Veículo﻿")
+
+    assert (article.title, article.summary, article.publisher) == ("Título escondido", None, "Veículo")
 
 
 class FakeGet:

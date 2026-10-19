@@ -31,6 +31,7 @@ flowchart LR
 | [A memória de longo prazo](memoria.md) | Categorias, substituição por modelo de decisão, busca híbrida e proveniência |
 | [Persistência, cache e autenticação](persistencia.md) | A árvore de conversas, o cache no Redis, sessões e senhas |
 | [Operação](operacao.md) | Métricas por execução, `/api/metrics` e o que acontece quando cada dependência falha |
+| [Segurança](seguranca.md) | Ameaças e defesas: prompt injection, histórico forjado, chaves, isolamento entre contas |
 
 ## O código
 

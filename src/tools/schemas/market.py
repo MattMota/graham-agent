@@ -333,8 +333,31 @@ class MarketSummary(BaseModel):
     )
 
 
+# Caracteres de controle e invisíveis (largura zero, inversão de direção):
+# não mudam o que se lê na tela, mas podem esconder instruções para o modelo.
+INVISIBLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f​-‏‪-‮⁠-⁤﻿]")
+
+# Tamanho máximo de cada campo de texto de uma notícia, em caracteres.
+NEWS_LIMITS = {"title": 300, "summary": 800, "publisher": 100}
+
+
+def third_party_text(value: Optional[str], limit: int) -> Optional[str]:
+    """Texto de terceiros pronto para o contexto do modelo: sem invisíveis,
+    com espaços normalizados e tamanho limitado."""
+    if not value:
+        return None
+    text = re.sub(r"\s+", " ", INVISIBLE.sub("", value)).strip()
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text or None
+
+
 class NewsArticle(BaseModel):
-    """Notícia publicada sobre um ticker ou um tema."""
+    """Notícia publicada sobre um ticker ou um tema.
+
+    Título, resumo e veículo são texto de terceiros que entra no contexto do
+    modelo: chegam limpos e limitados (docs/arquitetura/seguranca.md).
+    """
 
     title: Optional[str] = Field(default=None, description="Título da notícia.")
     summary: Optional[str] = Field(default=None, description="Resumo da notícia.")
@@ -345,6 +368,11 @@ class NewsArticle(BaseModel):
     publisher: Optional[str] = Field(
         default=None, description="Veículo que publicou a notícia."
     )
+
+    @field_validator("title", "summary", "publisher")
+    @classmethod
+    def _clean(cls, value: Optional[str], info) -> Optional[str]:
+        return third_party_text(value, NEWS_LIMITS[info.field_name])
 
 
 class TickerNews(BaseModel):

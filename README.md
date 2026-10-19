@@ -21,7 +21,7 @@ Projeto de estudo: as cotações vêm com atraso e nada aqui é recomendação d
 > - **Resilient streaming**: AG-UI events go through Redis Streams, so a run survives a dropped connection and the UI resumes where it stopped.
 > - **Long-term memory**: hybrid search (pgvector and full text, fused by rank) and fact replacement decided by a calibrated decision model.
 > - **Real domain logic**: average-cost ledger, dividends by ex-date, earnings calendar, target allocation with drift check and rebalancing.
-> - **Quality and operations**: unit, graph (scripted model), full-server integration and opt-in model evals; CI on GitHub Actions; per-run latency, token and tool-error metrics; retries with backoff; optional LangSmith traces. Decisions, including what was left out, are in [`docs/adr/`](docs/adr/).
+> - **Quality and operations**: unit, graph (scripted model), full-server integration and opt-in model evals, including prompt-injection resistance; CI on GitHub Actions; per-run latency, token and tool-error metrics; retries with backoff; a written threat model. Decisions, including what was left out, are in [`docs/adr/`](docs/adr/).
 
 ---
 
@@ -32,8 +32,8 @@ Projeto de estudo: as cotações vêm com atraso e nada aqui é recomendação d
 - **Streaming que sobrevive à conexão.** A interface fala AG-UI. Cada execução roda em segundo plano e grava os eventos num Redis Stream, então recarregar a página ou perder a rede não interrompe a resposta. O servidor, e não o cliente, é a fonte da verdade do histórico. → [A interface e o AG-UI](docs/arquitetura/interface.md)
 - **Memória de longo prazo.** Fatos sobre o usuário e turnos passados, com busca híbrida (pgvector e texto, por Reciprocal Rank Fusion). A substituição de um fato desatualizado é decidida por um modelo de decisão, calibrado contra o cosseno. → [A memória](docs/arquitetura/memoria.md)
 - **Domínio financeiro com regras próprias.** Livro de operações com preço médio, proventos pela data ex, agenda de resultados, e alocação-alvo com enquadramento e rebalanceamento por aporte. Também trata as particularidades da Yahoo, como datas no fuso errado e FIIs marcados como ações. → [Carteira e dados de mercado](docs/arquitetura/carteira-e-mercado.md)
-- **Qualidade medida.** Testes em quatro camadas: unidade; grafo com um modelo roteirizado; o servidor inteiro contra Postgres e Redis; evals com o modelo de verdade. A CI roda no GitHub Actions, e os traces na LangSmith são opcionais, agrupados por conversa. → [Testes](docs/desenvolvimento.md#testes)
-- **Operação.** Cada execução grava latência, tokens e erros de ferramenta, resumidos em `/api/metrics`; as chamadas ao modelo, à Yahoo e ao Google News tentam de novo as falhas passageiras, e cada dependência tem um comportamento definido quando cai. Os traces na LangSmith são opcionais, agrupados por conversa. → [Operação](docs/arquitetura/operacao.md)
+- **Qualidade medida.** Testes em quatro camadas: unidade; grafo com um modelo roteirizado; o servidor inteiro contra Postgres e Redis; evals com o modelo de verdade, de escolha de ferramenta e de resistência a prompt injection. A CI roda no GitHub Actions. → [Testes](docs/desenvolvimento.md#testes)
+- **Operação e segurança.** Cada execução grava latência, tokens e erros de ferramenta, resumidos em `/api/metrics`; as chamadas ao modelo, à Yahoo e ao Google News tentam de novo as falhas passageiras, e cada dependência tem um comportamento definido quando cai. As ameaças, do prompt injection pelas notícias ao histórico forjado pelo cliente, estão mapeadas com as defesas e o que fica de fora. → [Operação](docs/arquitetura/operacao.md), [Segurança](docs/arquitetura/seguranca.md)
 - **Decisões registradas.** Os [ADRs](docs/adr/) dizem o que ficou de fora e por quê: OAuth e A2A, Deep Agents e multi-agente, frameworks de eval com juiz, carteiras-modelo. O [glossário](CONTEXT.md) fixa o vocabulário do domínio.
 
 ## Arquitetura
