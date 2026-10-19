@@ -88,7 +88,7 @@ def _symbols_in(payload: Any) -> list[str]:
     symbols = []
     if payload.get("ticker_name"):
         symbols.append(payload["ticker_name"])
-    for key in ("matches", "companies", "positions", "entries"):
+    for key in ("matches", "companies", "positions", "entries", "events", "assets", "orders"):
         for item in payload.get(key) or []:
             if isinstance(item, dict) and item.get("ticker_name"):
                 symbols.append(item["ticker_name"])
