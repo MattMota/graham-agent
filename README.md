@@ -12,6 +12,8 @@ O projeto é de estudo. As cotações vêm com atraso e nada aqui é recomendaç
 
 Você pergunta em linguagem natural — *"Quanto vale BBAS3 hoje?"*, *"Notícias da Petrobras"*, *"Compare ouro e Bitcoin"* — e o agente decide sozinho quais consultas precisa fazer, executa e explica o resultado.
 
+Além do mercado, ele cuida da sua **carteira** e da **watchlist** (cada operação passa por um cartão de confirmação), calcula os **proventos** recebidos, compara o **desempenho** de ativos contra o índice, monta a **agenda** dos próximos resultados e datas ex e guarda uma **memória** do seu perfil e das conversas anteriores.
+
 A resposta chega **token a token**, com os dados aparecendo conforme são buscados. Ao final, os tickers citados viram cartões de cotação recolhíveis, e cada consulta feita pode ser aberta para inspeção (argumentos enviados e JSON devolvido).
 
 ### Ferramentas disponíveis ao agente
@@ -103,8 +105,6 @@ PUBLIC_URL=http://127.0.0.1:8000
 
 `PUBLIC_URL` é o endereço pelo qual o servidor é alcançado, sem barra no fim: dele saem a URL do servidor MCP (`{PUBLIC_URL}/mcp`), os metadados de autorização e os hosts aceitos. O padrão é `http://127.0.0.1:8000`; mude-o se rodar em outra porta ou atrás de um domínio. O Graham chama o próprio MCP por esse endereço; para usar outro caminho interno (atrás de um proxy, por exemplo), defina `MCP_INTERNAL_URL`.
 
-### Banco de dados e Redis
-
 #### Traces na LangSmith (opcional)
 
 Para ver cada turno do agente na [LangSmith](https://smith.langchain.com) (chamadas ao modelo, ferramentas do MCP e o nó de aprovação), acrescente ao `.env`:
@@ -118,6 +118,8 @@ LANGSMITH_PROJECT=graham
 O SDK já vem com o LangChain; nada no código liga ou desliga o tracing além dessas variáveis. Os turnos de uma conversa aparecem agrupados na aba *Threads* do projeto, pelo id da conversa. Os embeddings e o modelo de decisão da memória chamam o provedor direto pelo `httpx` e ficam de fora.
 
 Sem cartão cadastrado, o plano gratuito aceita 5.000 traces por mês e recusa os seguintes, sem cobrar; com cartão, o excedente é cobrado. Cada turno é um trace (retomar depois de uma confirmação abre outro). Os traces vão para os servidores da LangSmith com as perguntas, as respostas e os resultados das ferramentas, inclusive a carteira e o perfil do usuário; com `LANGSMITH_TRACING=false`, nada sai da máquina.
+
+### Banco de dados e Redis
 
 ```bash
 docker compose up -d        # sobe o Postgres 18 com pgvector e o Redis
@@ -295,7 +297,7 @@ As ferramentas que gravam dados não rodam sem o usuário. Quando o modelo pede 
 
 A carteira é um **livro de operações** (`core.portfolio_trades`): cada compra e cada venda é uma linha que nunca muda. A posição de cada ativo sai da aplicação das operações em ordem de data, pelo **preço médio**, o critério da Receita e da B3: uma compra recalcula a média ponderada, e uma venda reduz a quantidade sem mexer nela. Uma venda que deixaria a posição negativa em qualquer data é recusada. O preço fica na **moeda em que o usuário pagou** (`price_currency`), que pode ser diferente da moeda em que a Yahoo cota o ativo (`quote_currency`): Bitcoin comprado em reais é `BTC-USD` com preço em BRL. O custo fica nessa moeda, e só o valor atual é convertido, pelo câmbio do momento da consulta (`USDBRL=X`), então nenhum câmbio histórico é necessário. Cada ativo usa uma só moeda de pagamento, para o preço médio não misturar moedas. Os totais são por moeda de pagamento.
 
-Na interface, a consulta à carteira aparece como as outras consultas, no aviso recolhível; ao abrir, as posições, os totais por moeda e as operações vêm em tabela, acima do JSON. Cada ferramenta pode ganhar uma vista assim em `TOOL_VIEWS`, no `app.js`.
+Na interface, a carteira, os proventos, o desempenho (com o gráfico) e a agenda de eventos ganham uma vista em tabela, que aparece depois da rodada de consultas e antes do texto da resposta; mais de uma vista no mesmo turno vem recolhida, cada uma sob um título. O JSON continua no detalhe da consulta. Cada ferramenta pode ganhar uma vista assim em `TOOL_VIEWS`, no `app.js`.
 
 A watchlist (`core.watchlist`) guarda o ativo, a operação pretendida (`compra`, `venda` ou `short`), o preço alvo e, opcionalmente, a quantidade, que transforma o acompanhamento num plano. O mesmo ativo pode aparecer mais de uma vez, com operações ou alvos diferentes.
 
@@ -430,7 +432,7 @@ sequenceDiagram
     G-->>S: on_chat_model_stream
     S-->>N: REASONING_START … REASONING_END
     S-->>N: TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END
-    G->>Y: consulta via ferramenta
+    G->>Y: consulta via ferramenta do MCP
     Y-->>G: dados
     S-->>N: TOOL_CALL_RESULT
     G-->>S: on_chat_model_stream
@@ -493,9 +495,9 @@ Os cartões não são gravados: ao reabrir uma conversa, as respostas e as consu
 
 ## Decisões que valem conhecer
 
-**Ferramentas vinculadas na definição do modelo.** `LLM` em `config/model.py` já é o resultado de `.bind_tools(TOOLS)`, porque o agente sempre dispõe do mesmo conjunto. O efeito colateral é que `LLM` não é mais um `BaseChatModel`, e sim um binding — algo a lembrar se um dia for preciso passá-lo a uma API que exija o modelo puro.
+**Ferramentas vinculadas ao compilar o grafo.** As ferramentas do MCP só são conhecidas na subida, ao listar o servidor, então `bind_model(tools)`, em `config/model.py`, liga o modelo a elas quando o grafo é compilado, e não na importação. O resultado é um binding, não um `BaseChatModel`; quem precisa do modelo puro (o processamento de memória, por exemplo) usa `chat_model()`, de `config/settings.py`.
 
-**Nós assíncronos são obrigatórios.** `call_model` usa `await LLM.ainvoke(...)`. Um `invoke()` síncrono roda numa thread e perde a propagação dos callbacks: os eventos `on_chat_model_stream` simplesmente não chegam, e o streaming morre silenciosamente.
+**Nós assíncronos são obrigatórios.** O nó `agent` usa `await model.ainvoke(...)`. Um `invoke()` síncrono roda numa thread e perde a propagação dos callbacks: os eventos `on_chat_model_stream` simplesmente não chegam, e o streaming morre silenciosamente.
 
 **`NaN` não é JSON.** A Yahoo devolve `NaN` onde o dado não se aplica (o BTC-USD não tem fechamento anterior). Como `NaN` é um `float` válido em Python mas não existe no JSON, ele é convertido em `None` já na origem, no helper `_safe`. Os eventos AG-UI são modelos Pydantic, que serializam `NaN` como `null`: uma segunda rede, sem código nosso.
 

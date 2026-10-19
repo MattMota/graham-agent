@@ -53,7 +53,7 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 |---|---|---|---|
 | Cartões de cotação dos tickers citados | ✅ Existente | `src/server/runs.py` | Até 8 por resposta, sem repetir consultas já feitas |
 | Detalhe das consultas feitas | ✅ Existente | `src/server/static/app.js` | Argumentos enviados e JSON devolvido, recolhíveis. Várias consultas seguidas viram um grupo que mostra só a em andamento e a contagem |
-| Análises fora das consultas | ✅ Existente | `toolRun` em `src/server/static/app.js` | Carteira, proventos e o gráfico de desempenho aparecem entre as consultas e o texto da resposta; mais de uma no mesmo grupo, cada uma recolhida sob um título |
+| Análises fora das consultas | ✅ Existente | `toolRun` em `src/server/static/app.js` | Carteira, proventos, o gráfico de desempenho e a agenda de eventos aparecem entre as consultas e o texto da resposta; mais de uma no mesmo grupo, cada uma recolhida sob um título |
 | Markdown nas respostas | ✅ Existente | `src/server/static/app.js` | Renderizador próprio; todo conteúdo é escapado antes de virar HTML |
 | REPL de linha de comando | ✅ Existente | `main.py` | |
 | Inspeção do servidor MCP | ✅ Existente | `scripts/mcp_inspector.py` | Abre o MCP Inspector conectado ao `/mcp` com uma chave temporária da conta, revogada ao fechar |
