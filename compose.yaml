@@ -1,6 +1,8 @@
-# Serviços locais do Graham: Postgres 18 com pgvector e Redis.
+# Serviços locais do Graham: Postgres 18 com pgvector, Redis e, no perfil `app`, o próprio Graham.
 #
-#   docker compose up -d      sobe tudo em segundo plano
+#   docker compose up -d      sobe o Postgres e o Redis em segundo plano
+#   docker compose --profile app up -d --build
+#                             sobe também o Graham, em http://127.0.0.1:8000
 #   docker compose ps         mostra se está de pé (e saudável)
 #   docker compose logs db    mostra o que o Postgres escreveu no log
 #   docker compose down       desliga tudo; os dados do Postgres continuam no volume
@@ -40,6 +42,26 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  app:
+    # Fora do `docker compose up` comum: quem desenvolve roda o uvicorn com --reload
+    # na mesma porta.
+    profiles: ["app"]
+    build: .
+    # A chave do modelo e os traces opcionais vêm do .env; os endereços abaixo valem mais.
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://graham:graham@db:5432/graham?connect_timeout=10
+      REDIS_URL: redis://redis:6379/0
+      PUBLIC_URL: http://127.0.0.1:8000
+      MCP_INTERNAL_URL: http://127.0.0.1:8000/mcp
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   pgdata:

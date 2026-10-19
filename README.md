@@ -182,6 +182,14 @@ Abra **http://127.0.0.1:8000** e entre com a sua conta (ou crie uma). O `--reloa
 
 No Windows, o `--reload` é também o que faz o servidor funcionar: sem ele, o uvicorn usa o `ProactorEventLoop`, que o psycopg assíncrono não aceita, e o servidor se recusa a subir com uma mensagem dizendo isso.
 
+### Tudo no Docker
+
+```bash
+docker compose --profile app up -d --build
+```
+
+Sobe o Postgres, o Redis e o Graham, que aplica as migrations pendentes e atende em **http://127.0.0.1:8000**. A chave do modelo (e os traces opcionais) vêm do `.env`; os endereços do banco e do Redis, do `compose.yaml`. Fica num perfil à parte para não ocupar a porta de quem desenvolve com o `--reload`: o `docker compose up -d` comum continua subindo só o Postgres e o Redis.
+
 ### Linha de comando
 
 ```bash
@@ -224,7 +232,8 @@ A CI (`.github/workflows/ci.yml`) roda o ruff e a suíte, menos os evals, a cada
 
 ```
 main.py                      REPL de linha de comando
-compose.yaml                 Postgres 18 com pgvector, para desenvolvimento
+compose.yaml                 Postgres 18 com pgvector e Redis; no perfil app, o Graham
+Dockerfile                   A imagem do Graham, que aplica as migrations ao subir
 CONTEXT.md                   O vocabulário do domínio
 docs/
 ├── FEATURES.md              O mapa das features: existentes, pendentes e fora do escopo
