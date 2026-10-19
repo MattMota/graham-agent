@@ -6,6 +6,8 @@ Um agente conversacional que responde perguntas sobre ações, empresas e setore
 
 O projeto é de estudo. As cotações vêm com atraso e nada aqui é recomendação de investimento.
 
+> **In English.** Graham is a personal investment agent for the Brazilian (B3) and US markets, in Portuguese. It answers market questions with live Yahoo Finance data and keeps the user's portfolio, watchlist and long-term memory. It also checks the portfolio against a target allocation the user sets, and suggests how to rebalance it. Every write (a trade, a watchlist change, the target allocation) stops at a confirmation card the user can edit before anything is stored. Under the hood: a hand-written LangGraph ReAct graph with a human-in-the-loop node and Postgres checkpoints. The tools live on an authenticated MCP server, with resources and skills (SEP-2640), that other local agents can use too. The UI talks to the agent over AG-UI, with resumable streams on Redis, and traces are optional in LangSmith. Tests come in four layers: unit, graph with a scripted model, full-server integration, and opt-in model evals. CI runs on GitHub Actions. It runs only on the user's machine, by design. The decisions behind what was left out are in [`docs/adr/`](docs/adr/), the domain vocabulary in [`CONTEXT.md`](CONTEXT.md), and the feature map in [`docs/FEATURES.md`](docs/FEATURES.md).
+
 ---
 
 ## O que ele faz
