@@ -1,4 +1,4 @@
-"""Schemas de entrada das ferramentas de proventos e desempenho."""
+"""Schemas de entrada das ferramentas de proventos, desempenho e agenda."""
 
 from datetime import date
 from typing import Annotated, Literal, Optional
@@ -86,3 +86,34 @@ class PerformanceInput(BaseModel):
         if value and value >= date.today():
             raise ValueError("A data de início precisa ser anterior a hoje.")
         return value
+
+
+class AgendaInput(BaseModel):
+    """Argumentos da agenda de eventos."""
+
+    tickers: Optional[list[TickerSymbol]] = Field(
+        default=None,
+        title="Ativos",
+        description=(
+            "Até 20 ativos, como ['PETR4.SA', 'AAPL']. Sem eles, a agenda é a da carteira "
+            "(posições em aberto) e da watchlist do usuário."
+        ),
+        max_length=20,
+    )
+    days: Annotated[
+        int,
+        Field(
+            title="Dias",
+            description="Janela da agenda, em dias contados a partir de hoje.",
+            ge=1,
+            le=365,
+        ),
+    ] = 90
+
+    @field_validator("tickers", mode="before")
+    @classmethod
+    def _upper_all(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        # Uma lista vazia pede o mesmo que nenhuma: a carteira e a watchlist.
+        if not value:
+            return None
+        return [_clean(item) or item for item in value] if isinstance(value, list) else value

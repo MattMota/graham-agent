@@ -789,6 +789,7 @@ const TOOL_NAMES = {
   cotacao_atual_acao: "cotação atual",
   proventos: "proventos",
   desempenho: "desempenho",
+  agenda_eventos: "agenda de eventos",
   guardar_memoria: "memória",
   buscar_memorias: "busca na memória",
   ver_memoria: "memória",
@@ -1364,10 +1365,56 @@ function performanceView(output, artifact) {
   return view;
 }
 
+/* Agenda: resultados, datas ex e pagamentos, em ordem de data. */
+const EVENT_LABELS = { resultado: "Resultado", data_ex: "Data ex", pagamento: "Pagamento de provento" };
+
+function eventDate(event) {
+  const span = event.until ? `${isoDate(event.date)} a ${isoDate(event.until)}` : isoDate(event.date);
+  return event.estimated ? `${span} (prevista)` : span;
+}
+
+function agendaView(output) {
+  if (!output || !Array.isArray(output.events)) return null;
+  const view = document.createElement("div");
+  view.className = "tool-view";
+
+  if (!(output.tickers || []).length) {
+    view.append(emptyNote("A carteira e a watchlist estão vazias."));
+    return view;
+  }
+  if (!output.events.length) {
+    view.append(emptyNote(`Nenhum evento conhecido nos próximos ${output.days} dias.`));
+  } else {
+    // A origem só existe quando há usuário; sem ela, as duas colunas sobram.
+    const mine = output.events.some((event) => event.origin);
+    view.append(dataTable(
+      `De ${isoDate(output.from)} a ${isoDate(output.to)}`,
+      [
+        { label: "Data" }, { label: "Ativo" }, { label: "Evento" },
+        ...(mine ? [{ label: "Origem" }, { label: "Quantidade", numeric: true }] : []),
+      ],
+      output.events.map((event) => [
+        eventDate(event),
+        event.ticker_name,
+        EVENT_LABELS[event.type] || event.type,
+        ...(mine ? [(event.origin || []).join(" e ") || "—", quantity(event.quantity)] : []),
+      ]),
+    ));
+  }
+  if ((output.without_events || []).length) {
+    view.append(emptyNote(`Sem evento conhecido no período: ${output.without_events.join(", ")}.`));
+  }
+  if ((output.unavailable || []).length) {
+    view.append(emptyNote(`Não consultados: ${output.unavailable.join(", ")}.`));
+  }
+  return view;
+}
+
 const TOOL_VIEWS = {
   ver_carteira: portfolioView,
   proventos: incomeView,
   desempenho: performanceView,
+  agenda_eventos: agendaView,
 };
 
 /* ───────────────────────── Detalhe da chamada de ferramenta ─────────────── */
@@ -1500,6 +1547,7 @@ const VIEW_PERIODS = {
     return spans.size === 1 ? [...spans][0] : null;
   },
   proventos: (output) => (output?.months ? `últimos ${output.months} meses` : null),
+  agenda_eventos: (output) => (output?.days ? `próximos ${output.days} dias` : null),
 };
 
 function viewTitle(name, input, output) {

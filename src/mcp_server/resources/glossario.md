@@ -10,6 +10,13 @@ O sentido exato de cada termo nos resultados das ferramentas, como elas o calcul
 - **Dividend yield** (`dividend_yield_12m`): total em 12 meses dividido pela cotação atual, em percentual.
 - **Recebido pela carteira** (`received`): para cada pagamento, a quantidade que o usuário tinha no fim do pregão anterior à data ex vezes o valor por ação. Uma compra feita na própria data ex não entra.
 
+## Agenda
+
+- **Resultado** (`resultado`): a divulgação do balanço do período pela empresa. Uma data não confirmada vem com `estimated`, e uma janela prevista, com o fim dela em `until`.
+- **Data ex** (`data_ex`): a próxima data ex de um provento já anunciado. Tem direito quem tiver o ativo no fim do pregão anterior a ela.
+- **Pagamento** (`pagamento`): a data em que o provento cai na conta. A Yahoo costuma tê-la só para ativos americanos.
+- **Origem** (`origin`): de onde o ativo entrou na agenda, `carteira` (com a quantidade em aberto, `quantity`) ou `watchlist`.
+
 ## Desempenho
 
 - **Retorno de preço** (`price_return_percent`): variação do preço de fechamento entre o primeiro e o último dia do período.

@@ -43,7 +43,7 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Desempenho e comparação | ✅ Existente | `desempenho` | Até 4 ativos contra o Ibovespa ou o S&P 500, por período ou desde uma data; gráfico na interface |
 | Fundamentos | ⏳ Pendente | | Indicadores e evolução do P/L e P/VP; demonstrativos da Petrobras e da Vale vêm em dólar com rótulo de real e precisam de checagem |
 | Consenso de analistas | ⏳ Pendente | | Preço-alvo, recomendações e estimativas de lucro |
-| Agenda de eventos | ⏳ Pendente | | Próximos resultados e datas ex da carteira e da watchlist |
+| Agenda de eventos | ✅ Existente | `agenda_eventos` | Próximos resultados, datas ex e pagamentos da carteira e da watchlist, ou de ativos pedidos; tabela na interface. A Yahoo nem sempre tem o próximo resultado das empresas brasileiras, e esses ativos vêm à parte |
 | Triagem de ações | ⏳ Pendente | | Screener com `region = br`, filtrando os BDRs |
 | Resumo de mercado | ⏳ Pendente | | O schema `MarketInput` e o rótulo na interface existem, mas a ferramenta não está registrada |
 

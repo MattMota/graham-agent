@@ -65,6 +65,7 @@ As respostas da Yahoo e do Google News ficam guardadas por um tempo, e duas cons
 | Notícias de uma ação ou de um tema | {_duration(market.NEWS_TTL)} |
 | Histórico de preços (desempenho) | {_duration(analysis.HISTORY_TTL)} |
 | Proventos | {_duration(analysis.INCOME_TTL)} |
+| Datas de eventos (agenda e próxima data ex) | {_duration(analysis.EVENTS_TTL)} |
 | Busca de ticker e empresas por setor | {_duration(market.CATALOG_TTL)} |
 
 Um resultado vazio não entra no cache: pode ser a fonte fora do ar, e a consulta seguinte tenta de novo.
@@ -73,6 +74,7 @@ Um resultado vazio não entra no cache: pode ser a fonte fora do ar, e a consult
 
 - Notícias sem resumo: não afirme além do que o título diz, e cite o veículo e a data.
 - Os proventos são os registrados na Yahoo, que pode não ter todos.
+- A agenda só traz o que a Yahoo já tem: a data ex depois do anúncio do provento, a data de pagamento em geral só para ativos americanos e, das empresas brasileiras, nem sempre o próximo resultado. Um ativo sem evento na agenda pode ter eventos que ainda não chegaram à fonte.
 - O desempenho compara no máximo 4 ativos, cada um na moeda da própria cotação.
 """
 

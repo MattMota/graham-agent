@@ -33,6 +33,7 @@ As de mercado, análise, carteira e watchlist ficam no [servidor MCP](#servidor-
 | `remover_watchlist` ✋ | `ticker_name`, `operation`, `target_price?` | A entrada removida |
 | `proventos` | `ticker_name?`, `months` | Pagamentos pela data ex, total em 12 meses, dividend yield e próxima data ex; sem ticker, quanto a carteira recebeu |
 | `desempenho` | `tickers`, `period` ou `start_date`, `compare_index` | Retorno com e sem proventos, anualizado, volatilidade, maior queda, máxima e mínima, contra o Ibovespa ou o S&P 500 |
+| `agenda_eventos` | `tickers?`, `days` | Próximos resultados, datas ex e pagamentos, em ordem de data; sem tickers, os da carteira e da watchlist, com a origem e a quantidade |
 | `guardar_memoria` | `fact`, `category` | Grava um fato duradouro sobre o usuário; embedding e substituição seguem em segundo plano |
 | `buscar_memorias` | `search_fact` | Fatos e trechos de conversas anteriores relacionados, por busca híbrida |
 | `ver_memoria` | `memory_id` | O conteúdo completo; numa conversa, as mensagens originais do turno |
@@ -211,13 +212,13 @@ src/
 │   ├── skills_extension.py  Serve as skills pela extensão SEP-2640 e como prompts
 │   └── server.py            Servidor MCP: verificador de tokens e registro do catálogo
 ├── tools/                   As ferramentas publicadas pelo MCP, sem LangChain
-│   ├── analysis.py          Proventos (de um ativo ou da carteira) e desempenho
+│   ├── analysis.py          Proventos (de um ativo ou da carteira), desempenho e agenda de eventos
 │   ├── catalog.py           Nome, descrição, entrada, função e escopo de cada uma
 │   ├── context.py           ToolContext (usuário e pool) e ToolFailure
 │   ├── market.py            Cotação, notícias e buscas no yfinance e no Google News
 │   ├── portfolio.py         Carteira e watchlist
 │   └── schemas/             Um módulo por domínio, como as ferramentas
-│       ├── analysis.py      Entrada de proventos e desempenho
+│       ├── analysis.py      Entrada de proventos, desempenho e agenda
 │       ├── common.py        Tipos usados por mais de um domínio (o ticker)
 │       ├── market.py        Entrada e saída das ferramentas de mercado (a saída normaliza o que a Yahoo devolve)
 │       └── portfolio.py     Entrada da carteira e da watchlist
@@ -377,6 +378,7 @@ Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da con
 |---|---|---|---|
 | Notícias | `graham:market:noticias_acao:*`, `graham:market:noticias_tema:*` | 1h | Resultado vazio não entra no cache: pode ser a fonte fora do ar |
 | Proventos de um ativo | `graham:market:proventos:*` | 24h | |
+| Datas de eventos | `graham:market:eventos:*` | 6h | Resultado, data ex e pagamento de um ativo; uma data ex pode ser anunciada para o dia seguinte |
 | Histórico de preços | `graham:market:historico:*` | 1h | |
 | Busca de ticker e triagem por setor | `graham:market:buscar_*:*` | 24h | Mudam raramente |
 | Cotação | | | **Sem cache:** muda a todo momento, e um preço velho é pior do que nenhum |
@@ -384,6 +386,8 @@ Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da con
 **Notícias pela busca da Yahoo.** Desde 2026, o feed de notícias por ticker da Yahoo responde 404, e o yfinance (até a 1.7.0) devolve a falha como uma lista vazia, igual a "não há notícias". O feed continua sendo a primeira tentativa; vazio, a ferramenta busca pelo nome da empresa, em algumas variações (`Petróleo Brasileiro S.A. - Petrobras` não encontra nada, `Petrobras` encontra), e fica só com as notícias marcadas com alguma listagem da empresa (a Petrobras aparece como `PBR` e `PBR-A`). Essas notícias não trazem resumo, e o resultado avisa o modelo para não ir além do título.
 
 **Proventos da carteira.** Sem ticker, `proventos` cruza o livro de operações com as datas ex da Yahoo: em cada pagamento, conta a quantidade que o usuário tinha no fim do pregão anterior, então uma compra feita na própria data ex não entra. Os valores são brutos, por ação ou cota.
+
+**Datas de eventos pelo `info`.** A agenda e a próxima data ex de `proventos` vêm do `info` da Yahoo, não do `calendar`. O yfinance (até a 1.7.0) converte as datas do `calendar` pelo fuso da máquina, e a Yahoo grava as de proventos à meia-noite UTC: num servidor no Brasil, a data ex saía um dia antes (a da Apple caía num domingo). As de proventos são lidas em UTC; as de resultado, que são um horário, no fuso da bolsa. A Yahoo nem sempre tem o próximo resultado das empresas brasileiras (PETR4 e ITUB4 vêm sem, VALE3 e WEGE3 com), e a ferramenta lista esses ativos à parte, sem afirmar que não há evento.
 
 **O gráfico não passa pelo modelo.** `desempenho` usa o `response_format="content_and_artifact"` do LangChain: o modelo recebe só as métricas (cerca de 1.700 caracteres para três ativos), e a série de pontos vai no artefato da `ToolMessage`. O servidor manda o artefato à interface no `metadata` do `TOOL_CALL_RESULT` e o guarda no `payload` da mensagem da ferramenta, para o gráfico voltar ao reabrir a conversa; o histórico entregue ao modelo continua sem ele.
 

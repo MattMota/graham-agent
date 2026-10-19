@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from src.tools import analysis, market, portfolio
 from src.tools.context import ToolContext
-from src.tools.schemas.analysis import IncomeInput, PerformanceInput
+from src.tools.schemas.analysis import AgendaInput, IncomeInput, PerformanceInput
 from src.tools.schemas.market import (
     CompanySearchInput,
     IndustrySearchInput,
@@ -153,6 +153,19 @@ CATALOG: list[ToolSpec] = [
         run=analysis.performance,
         scope=READ,
         chart=True,
+    ),
+    ToolSpec(
+        name="agenda_eventos",
+        description=(
+            "Lista, em ordem de data, os próximos eventos de ativos: divulgação de resultados, "
+            "datas ex e datas de pagamento de proventos. Sem tickers, cobre a carteira (posições "
+            "em aberto, com a quantidade) e a watchlist do usuário. Use quando o usuário "
+            "perguntar o que vem pela frente nos ativos dele, quando sai o balanço de uma empresa "
+            "ou até quando comprar para receber um provento."
+        ),
+        input_model=AgendaInput,
+        run=analysis.agenda,
+        scope=READ,
     ),
     ToolSpec(
         name="ver_carteira",

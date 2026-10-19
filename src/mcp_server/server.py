@@ -67,8 +67,8 @@ class TokenVerifier:
 server = MCPServer(
     "graham",
     instructions=(
-        "Dados de mercado (B3 e bolsas dos EUA), notícias, proventos, desempenho e a carteira "
-        "e a watchlist do usuário dono da chave. Ações brasileiras usam o sufixo '.SA'. "
+        "Dados de mercado (B3 e bolsas dos EUA), notícias, proventos, desempenho, agenda de "
+        "eventos e a carteira e a watchlist do usuário dono da chave. Ações brasileiras usam o sufixo '.SA'. "
         "As ferramentas que gravam exigem uma chave com permissão de escrita. Antes de usá-las, "
         "leia o resource graham://convencoes; graham://glossario explica os termos dos resultados. "
         "Roteiros prontos (analisar um ativo, explicar um movimento, revisar a carteira, registrar "
