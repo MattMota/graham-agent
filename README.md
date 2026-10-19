@@ -222,6 +222,9 @@ A CI (`.github/workflows/ci.yml`) roda o ruff e a suíte, menos os evals, a cada
 ```
 main.py                      REPL de linha de comando
 compose.yaml                 Postgres 18 com pgvector, para desenvolvimento
+docs/
+├── FEATURES.md              O mapa das features: existentes, pendentes e fora do escopo
+└── adr/                     As decisões, em especial o que ficou de fora e por quê
 .github/workflows/ci.yml     Ruff e testes a cada push e pull request
 db/
 ├── migrate.py               Aplica as migrations pendentes
@@ -530,6 +533,8 @@ Os cartões não são gravados: ao reabrir uma conversa, as respostas e as consu
 ---
 
 ## Decisões que valem conhecer
+
+As decisões de arquitetura e de escopo, em especial o que ficou de fora e por quê, estão em [`docs/adr/`](docs/adr/): o Graham só local ([0001](docs/adr/0001-graham-roda-so-localmente.md)), um agente só, sem Deep Agents nem multi-agente ([0002](docs/adr/0002-um-agente-so.md)) e evals sem framework de juiz ([0003](docs/adr/0003-evals-sem-framework-de-juiz.md)). Abaixo, as de implementação.
 
 **Ferramentas vinculadas ao compilar o grafo.** As ferramentas do MCP só são conhecidas na subida, ao listar o servidor, então `bind_model(tools)`, em `config/model.py`, liga o modelo a elas quando o grafo é compilado, e não na importação. O resultado é um binding, não um `BaseChatModel`; quem precisa do modelo puro (o processamento de memória, por exemplo) usa `chat_model()`, de `config/settings.py`.
 

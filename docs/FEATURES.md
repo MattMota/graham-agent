@@ -92,3 +92,18 @@ Features interdependentes, na ordem de implementação: cada uma depende das ant
 | 2.b. Skills do MCP | ✅ Existente | `src/mcp_server/skills/`, `skills_extension.py` | Analisar ativo, explicar movimento, revisar carteira e registrar operação, por grupo. Pela extensão SEP-2640 (conformidade verificada pelo Inspector), como prompts com argumentos e no próprio Graham, que as carrega com `ler_skill`. Padrão de criação e de variantes por argumento no `CLAUDE.md` da pasta |
 | 2.c. Protocolo AG-UI | ✅ Existente | `src/server/agent.py`, `agui.py`, `runs.py` | O protocolo entre a nossa interface e o agente, só para ela: o Graham Agent fica na plataforma. O servidor continua dono do histórico. Confirmação pelas interrupções do protocolo, regenerar em `forwardedProps`, extras do Graham em `metadata.graham` |
 | 2.d. Visualizações em A2UI | ⏳ Pendente | | Depende de 2 e 2.c, e espera a primeira versão estável do A2UI (a 1.0; hoje a estável é a 0.9.1). Carteira, proventos, desempenho e confirmações descritos pelas próprias ferramentas, não pelo modelo, com um catálogo do Graham para o gráfico e os cartões de ticker |
+
+## Fora do escopo
+
+Decidido não fazer, com o motivo. Uma linha sai daqui só revendo a decisão.
+
+| O quê | Por quê | Onde está a decisão |
+|---|---|---|
+| OAuth 2.1 no MCP, conectores do claude.ai e do ChatGPT | O Graham roda só na máquina do usuário; esses conectores rodam na nuvem e nunca o alcançariam. Chegou a ser implementado e foi desfeito | [ADR 0001](adr/0001-graham-roda-so-localmente.md) |
+| Protocolo A2A | Mesmo motivo; também ficaram sem resposta a autenticação do agente cliente e as confirmações | [ADR 0001](adr/0001-graham-roda-so-localmente.md) |
+| Deploy, túneis, links públicos | Mesmo motivo | [ADR 0001](adr/0001-graham-roda-so-localmente.md) |
+| Langfuse instalado na máquina | A LangSmith gratuita, opcional e sem cartão, evita manter mais um serviço; desligada, nada sai da máquina | [ADR 0001](adr/0001-graham-roda-so-localmente.md) |
+| Deep Agents e multi-agente | Turnos curtos, de uma ou duas rodadas de ferramentas; a confirmação e o AG-UI dependem do grafo próprio | [ADR 0002](adr/0002-um-agente-so.md) |
+| RAGAS e DeepEval | Os evals conferem decisões objetivas; um juiz só entra para avaliar a resposta final, e então o DeepEval | [ADR 0003](adr/0003-evals-sem-framework-de-juiz.md) |
+| Último dia com direito ao provento, pelo calendário da B3 | A agenda dá a data ex e a regra (o pregão anterior); calcular o dia exige manter os feriados da B3, e não vale a complexidade | Esta tabela |
+| Regras de estilo do ruff 0.17 | 144 avisos de estilo (106 de `Optional[X]` em vez de `X \| None`); o lint fica no conjunto clássico, que pega erros reais | `[tool.ruff.lint]` no `pyproject.toml` |
