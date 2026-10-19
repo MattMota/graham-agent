@@ -124,3 +124,7 @@ docs/               Arquitetura, desenvolvimento, features e ADRs
 | [docs/FEATURES.md](docs/FEATURES.md) | O que existe, o que está pendente e o que ficou fora do escopo |
 | [docs/adr/](docs/adr/) | As decisões, em especial o que ficou de fora e por quê |
 | [CONTEXT.md](CONTEXT.md) | O vocabulário do domínio |
+
+---
+
+© 2026 Matheus Mota. Todos os direitos reservados. O código está público para leitura e avaliação, sem licença de uso.
