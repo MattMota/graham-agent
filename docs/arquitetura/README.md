@@ -30,6 +30,7 @@ flowchart LR
 | [Carteira e dados de mercado](carteira-e-mercado.md) | Livro de operações, preço médio, alocação e rebalanceamento, e as particularidades da Yahoo |
 | [A memória de longo prazo](memoria.md) | Categorias, substituição por modelo de decisão, busca híbrida e proveniência |
 | [Persistência, cache e autenticação](persistencia.md) | A árvore de conversas, o cache no Redis, sessões e senhas |
+| [Operação](operacao.md) | Métricas por execução, `/api/metrics` e o que acontece quando cada dependência falha |
 
 ## O código
 

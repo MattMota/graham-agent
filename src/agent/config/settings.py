@@ -26,6 +26,8 @@ def chat_model(**overrides) -> ChatOpenAI:
         "temperature": SETTINGS["llm"]["temperature"],
         "timeout": SETTINGS["llm"]["timeout"],
         "max_retries": SETTINGS["llm"]["max_retries"],
+        # O uso de tokens vem no fim do stream: é dele que saem as métricas de cada execução.
+        "stream_usage": True,
         **overrides,
     }
     return ChatOpenAI(

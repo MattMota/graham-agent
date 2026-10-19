@@ -84,6 +84,7 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Testes de integração | ✅ Existente | `tests/integration/` | O servidor inteiro contra Postgres e Redis de teste: MCP com chaves e permissões, turnos pelo AG-UI com confirmação, memória do turno. Cotação, eventos, embeddings e modelo fixos |
 | Evals do modelo | ✅ Existente | `tests/evals/`, `-m eval` | Primeira ferramenta escolhida pelo modelo de verdade, por taxa de acerto; fora da CI porque custa tokens |
 | CI | ✅ Existente | `.github/workflows/ci.yml` | Ruff e a suíte, menos os evals, a cada push na `main` e em pull requests |
+| Métricas por execução | ✅ Existente | `agent.run_metrics`, `GET /api/metrics` | Duração, primeira saída, chamadas ao modelo, tokens, ferramentas e erros, por execução; resumo com p50 e p95 e custo estimado, se os preços estiverem configurados |
 | Retentativas | ✅ Existente | `settings.toml`, `tools/market.py` | Modelo e embeddings pelo cliente da OpenAI, Yahoo pelo yfinance, Google News por conta própria; espera exponencial, só para falhas passageiras |
 
 ## Plataforma

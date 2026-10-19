@@ -57,6 +57,7 @@ Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da con
 | `GET` | `/api/keys` | As chaves de acesso ativas (sem o valor) e a URL do servidor MCP |
 | `POST` | `/api/keys` | Recebe `{name, can_write}` e cria uma chave; o valor vem só nesta resposta |
 | `DELETE` | `/api/keys/{id}` | Revoga a chave |
+| `GET` | `/api/metrics` | Com `?days=` (7 por padrão), o resumo das execuções do usuário: latência, tokens, custo estimado e erros de ferramenta ([Operação](operacao.md)) |
 | `POST` | `/mcp` | Servidor MCP (Streamable HTTP), com `Authorization: Bearer` |
 | `GET` | `/.well-known/oauth-protected-resource/mcp` | Metadados do recurso protegido (RFC 9728) |
 | `GET` | `/api/health` | Confirma que o grafo compilou e lista seus nós |

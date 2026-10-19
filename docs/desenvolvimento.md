@@ -97,6 +97,8 @@ model = "deepseek/deepseek-v4-flash"
 temperature = 0.2
 timeout = 60
 max_retries = 2
+# usd_per_million_input = 0.0     # preços opcionais, para o custo em /api/metrics
+# usd_per_million_output = 0.0
 
 [embedding]
 model = "perplexity/pplx-embed-v1-0.6b"
@@ -117,7 +119,7 @@ O embedding e o modelo de decisão usam o mesmo gateway e a mesma chave do model
 
 O modelo escolhido precisa suportar **tool calling** e **streaming** — sem os dois, o agente não consegue consultar dados nem responder progressivamente.
 
-`max_retries` é o número de novas tentativas do cliente da OpenAI para falhas passageiras (408, 409, 429, 5xx e conexão), com espera exponencial.
+`max_retries` é o número de novas tentativas do cliente da OpenAI para falhas passageiras (408, 409, 429, 5xx e conexão), com espera exponencial; o uso de tokens vem no fim de cada stream (`stream_usage`) e alimenta as [métricas por execução](arquitetura/operacao.md). O que acontece quando cada dependência falha está na mesma página.
 
 As instruções do agente ficam em `src/agent/instructions/system_prompt.md`, em Markdown, carregadas na inicialização.
 

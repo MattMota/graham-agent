@@ -25,7 +25,7 @@ from src.agent.memory import processing as memory_processing
 from src.agent.runtime.state_graph import compile_graph
 from src.agent.tools.registry import load_agent
 from src.mcp_server import server as mcp_server
-from src.server import agent, auth, keys, streams
+from src.server import agent, auth, keys, metrics, streams
 from src.server.agui import CHECKPOINT_RETENTION
 from src.server.auth import require_user
 from src.storage import accounts, cache, conversations, tokens
@@ -128,6 +128,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Graham Agent", description="Seu corretor de confiança", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(keys.router)
+app.include_router(metrics.router)
 app.include_router(agent.router)
 
 

@@ -5,6 +5,10 @@ timeout = 60
 # Novas tentativas do cliente da OpenAI, com espera exponencial, para 408, 409,
 # 429, 5xx e falhas de conexão. Erros de requisição (400, 401) não se repetem.
 max_retries = 2
+# Preços do modelo, em dólares por milhão de tokens, para o custo estimado em
+# /api/metrics. Sem eles, o custo fica vazio.
+# usd_per_million_input = 0.0
+# usd_per_million_output = 0.0
 
 [embedding]
 # Vetores INT8 de 1.024 dimensões, comparados por cosseno (agent.memories.embedding).

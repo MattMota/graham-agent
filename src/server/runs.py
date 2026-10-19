@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import logging
+
 import anyio
 from ag_ui.core import (
     PROTOCOL_VERSION,
@@ -39,17 +41,20 @@ from fastapi import FastAPI
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from src.agent.config.settings import SETTINGS
 from src.agent.memory import processing as memory_processing
 from src.agent.runtime.context import AgentContext
 from src.agent.tools import remote as mcp_tools
 from src.agent.tools.registry import APPROVAL_REQUIRED
 from src.server.agui import extras, interrupts
 from src.server.recorder import TurnRecorder
-from src.storage import memories
+from src.storage import memories, metrics
 from src.tools import market
 
 # Quantos cartões de ticker podem ser enviados ao final de uma resposta.
 MAX_TICKER_CARDS = 8
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def _now_ms() -> int:
@@ -278,6 +283,15 @@ async def run(
         profile=tuple(row["content"] for row in profile),
     )
 
+    # O que a execução mede de si mesma: vira uma linha em `agent.run_metrics`.
+    measured = metrics.RunMetrics(
+        run_id=run_id, thread_id=thread["id"], user_id=thread["user_id"], model=SETTINGS["llm"]["model"]
+    )
+    started = time.monotonic()
+
+    def elapsed_ms() -> int:
+        return round((time.monotonic() - started) * 1000)
+
     yield RunStartedEvent(thread_id=thread_id, run_id=run_id, protocol_version=PROTOCOL_VERSION)
 
     stream = _Stream()
@@ -335,6 +349,8 @@ async def run(
             elif kind == "on_chat_model_stream":
                 chunk = event["data"]["chunk"]
                 if thinking is not None and (chunk.content.strip() or chunk.tool_call_chunks):
+                    if measured.first_output_ms is None:
+                        measured.first_output_ms = elapsed_ms()
                     yield stop_thinking()
                 if chunk.content:
                     recorder.token(chunk.content)
@@ -346,6 +362,10 @@ async def run(
                 for piece in chunk.tool_call_chunks:
                     for item in stream.call_chunk(piece, str(recorder.current)):
                         yield item
+
+            elif kind == "on_chat_model_end":
+                measured.model_calls += 1
+                measured.add_usage(getattr(event["data"].get("output"), "usage_metadata", None))
 
             elif kind == "on_tool_end" and event["name"] not in APPROVAL_REQUIRED:
                 output = event["data"].get("output")
@@ -378,6 +398,8 @@ async def run(
 
             elif kind == "on_chain_end" and event["name"] == "tools":
                 messages = event["data"]["output"]["messages"]
+                measured.tool_calls += len(messages)
+                measured.tool_errors += sum(message.status == "error" for message in messages)
                 await recorder.tools_finished(messages)
                 # Daqui, e não do `on_tool_end`: as operações confirmadas e os
                 # erros que escapam da ferramenta (tratados pelo ToolNode) só
@@ -397,6 +419,7 @@ async def run(
             requests = snapshot.interrupts[0].value
             approval_id = await recorder.pause(requests)
             settled = True
+            measured.outcome = "awaiting_approval"
             yield RunFinishedEvent(
                 thread_id=thread_id,
                 run_id=run_id,
@@ -408,6 +431,7 @@ async def run(
             return
 
         settled = True
+        measured.outcome = "completed"
         # O turno concluído vira memória `conversa`, para ser reencontrado depois.
         memory_processing.spawn(
             memory_processing.index_turn(pool, thread["user_id"], thread["title"], recorder.last)
@@ -418,6 +442,7 @@ async def run(
 
     except Exception as error:  # noqa: BLE001 - o erro precisa chegar ao cliente
         settled = True
+        measured.outcome = "failed"
         detail = f"{type(error).__name__}: {error}"
         message_id = await recorder.stop("failed", error=detail)
         yield RunErrorEvent(message=detail, metadata=extras(messageId=str(message_id)))
@@ -430,3 +455,24 @@ async def run(
                 await recorder.stop("interrupted")
         with anyio.CancelScope(shield=True):
             await connections.aclose()
+            await _record_metrics(pool, measured, elapsed_ms())
+
+
+async def _record_metrics(pool: Any, measured: metrics.RunMetrics, duration_ms: int) -> None:
+    """Grava as métricas da execução e as resume no log. Uma falha aqui não
+    pode afetar o turno, que já terminou."""
+    measured.duration_ms = duration_ms
+    tokens = (
+        f"{measured.input_tokens}+{measured.output_tokens} tokens"
+        if measured.input_tokens is not None else "tokens não informados"
+    )
+    logger.info(
+        "Execução %s: %s em %d ms (primeira saída em %s ms), %d chamada(s) ao modelo, %s, "
+        "%d ferramenta(s), %d com erro",
+        measured.run_id, measured.outcome, duration_ms, measured.first_output_ms,
+        measured.model_calls, tokens, measured.tool_calls, measured.tool_errors,
+    )
+    try:
+        await metrics.record(pool, measured)
+    except Exception:  # noqa: BLE001 - métrica perdida não derruba nada
+        logger.warning("Não foi possível gravar as métricas da execução %s", measured.run_id, exc_info=True)

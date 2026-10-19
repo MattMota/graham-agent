@@ -20,6 +20,13 @@ def says(text: str) -> AIMessage:
     return AIMessage(content=text)
 
 
+def with_usage(message: AIMessage, input_tokens: int, output_tokens: int) -> AIMessage:
+    """A mesma resposta, com o uso de tokens que o provedor informaria."""
+    return message.model_copy(update={"usage_metadata": {
+        "input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": input_tokens + output_tokens,
+    }})
+
+
 def calls(*tool_calls: tuple[str, dict[str, Any]]) -> AIMessage:
     """Uma resposta que só chama ferramentas, com ids previsíveis."""
     return AIMessage(
@@ -70,3 +77,6 @@ class ScriptedModel(BaseChatModel):
             if run_manager:
                 run_manager.on_llm_new_token("", chunk=chunk)
             yield chunk
+        # O uso de tokens chega num último fragmento, como no `stream_usage` da OpenAI.
+        if message.usage_metadata:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="", usage_metadata=message.usage_metadata))
