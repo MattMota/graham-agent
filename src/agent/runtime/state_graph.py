@@ -1,7 +1,8 @@
-from datetime import date
-from typing import TypedDict, Annotated, Any
+"""O grafo do agente: o modelo, a pausa para confirmação e as ferramentas."""
 
 import json
+from datetime import date
+from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
@@ -25,12 +26,13 @@ from src.tools.catalog import BY_NAME
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-def _with_edits(message: ToolMessage, edits: dict[str, Any]) -> ToolMessage:
-    """Adds to a write's result what the user corrected on the confirmation card.
 
-    Without it, the model sees a stored value different from what the user said
-    in the conversation and concludes it made a mistake. The result stays in
-    the history, so this holds for the following turns as well.
+def _with_edits(message: ToolMessage, edits: dict[str, Any]) -> ToolMessage:
+    """Acrescenta ao resultado de uma gravação o que o usuário corrigiu no cartão.
+
+    Sem isso, o modelo vê um valor gravado diferente do que o usuário disse na
+    conversa e conclui que errou. O resultado fica no histórico, então vale
+    também para os turnos seguintes.
     """
     if message.status == "error":
         return message
@@ -51,16 +53,16 @@ def _with_edits(message: ToolMessage, edits: dict[str, Any]) -> ToolMessage:
 def tools_node(tools: list[BaseTool]):
     node = ToolNode(
         tools=tools,
-        # Without this, only argument validation errors reach the model; any
-        # other exception raised by a tool (an unknown ticker, say) would abort
-        # the turn.
+        # Sem isso, só os erros de validação dos argumentos chegariam ao modelo;
+        # qualquer outra exceção de uma ferramenta (um ticker que não existe,
+        # por exemplo) derrubaria o turno.
         handle_tool_errors=True,
     )
 
     async def run_tools(task: dict[str, Any], config: RunnableConfig) -> Any:
         output = await node.ainvoke(task, config)
-        # The edits ride along in the state sent with each approved call; the
-        # tool itself, now behind MCP, never sees them.
+        # As correções vão no estado enviado com cada chamada aprovada; a
+        # ferramenta, atrás do MCP, nunca as vê.
         edits = (task.get("state") or {}).get("approval_edits") if isinstance(task, dict) else None
         if edits and isinstance(output, dict):
             output["messages"] = [
@@ -75,25 +77,24 @@ def tools_node(tools: list[BaseTool]):
 async def _respond(
     state: AgentState, runtime: Runtime[AgentContext], model: Runnable, sections: tuple[str, ...]
 ) -> dict:
-    # The tools' conventions and the skills catalog come from the MCP server's
-    # own reference, so the prompt and the server never drift apart.
+    # As convenções das ferramentas e o catálogo de skills vêm da referência do
+    # próprio servidor MCP: o prompt e o servidor não têm como divergir.
     parts = [SYSTEM_PROMPT.content, *sections]
-    # The model has no clock: without today's date it cannot fill in the date
-    # of a trade made "hoje".
+    # O modelo não tem relógio: sem a data de hoje, não saberia preencher a
+    # data de uma operação feita "hoje".
     parts.append(f"Hoje é {date.today():%Y-%m-%d}.")
-    # The user's profile and preferences ride along in every call, so answers
-    # take them into account even when the model does not think to search.
+    # O perfil e as preferências do usuário vão em toda chamada, para as
+    # respostas os levarem em conta mesmo quando o modelo não pensa em buscá-los.
     profile = getattr(runtime.context, "profile", ())
     if profile:
         facts = "\n".join(f"- {fact}" for fact in profile)
         parts.append(f"# O que você sabe sobre o usuário\n\n{facts}")
     response = await model.ainvoke([SystemMessage("\n\n".join(parts)), *state["messages"]])
-    # adiciona a resposta do modelo no estado (messages)
     return {"messages": [response]}
 
 
 def route_after_model(state: AgentState) -> str:
-    """Ends the turn, runs the tools, or first asks the user to approve them."""
+    """Encerra o turno, roda as ferramentas ou, antes, pede a confirmação do usuário."""
     message = state["messages"][-1]
     if not isinstance(message, AIMessage) or not message.tool_calls:
         return END
@@ -103,19 +104,19 @@ def route_after_model(state: AgentState) -> str:
 
 
 def _to_tools(call: dict[str, Any], state: AgentState, edits: dict[str, Any] | None = None) -> Send:
-    # One task per tool call, as `create_agent` does: only the calls listed
-    # here run, so a cancelled operation never reaches its tool. The edits ride
-    # along in the state the tool sees through `ToolRuntime.state`.
+    # Uma tarefa por chamada, como faz o `create_agent`: só rodam as chamadas
+    # listadas aqui, então uma operação cancelada nunca chega à ferramenta. As
+    # correções vão no estado que a ferramenta vê por `ToolRuntime.state`.
     if edits:
         state = {**state, "approval_edits": edits}
     return Send("tools", {"__type": "tool_call_with_context", "tool_call": call, "state": state})
 
 
 def _user_edits(name: str, proposed: dict[str, Any], approved: dict[str, Any]) -> dict[str, Any]:
-    """The fields the user changed on the card, with both values.
+    """Os campos que o usuário mudou no cartão, com os dois valores.
 
-    The proposal goes through the same schema first, so a ticker the model
-    wrote in lower case does not count as an edit.
+    A proposta passa antes pelo mesmo schema, para um ticker que o modelo
+    escreveu em minúsculas não contar como correção.
     """
     try:
         proposed = BY_NAME[name].input_model.model_validate(proposed).model_dump(mode="json")
@@ -129,15 +130,15 @@ def _user_edits(name: str, proposed: dict[str, Any], approved: dict[str, Any]) -
 
 
 async def request_approval(state: AgentState, runtime: Runtime[AgentContext]) -> Command:
-    """Pauses the graph until the user approves, edits or cancels each write.
+    """Pausa o grafo até o usuário aprovar, corrigir ou cancelar cada gravação.
 
-    On resume LangGraph runs this node again from the top, with `interrupt`
-    returning the decisions. That is why the pause lives here, in a node with no
-    side effects, and not inside the tools: a re-run here repeats nothing.
+    Ao retomar, o LangGraph roda este nó de novo do começo, com o `interrupt`
+    devolvendo as decisões. Por isso a pausa fica aqui, num nó sem efeitos
+    colaterais, e não dentro das ferramentas: repeti-lo não repete nada.
     """
     message: AIMessage = state["messages"][-1]
 
-    # The REPL has no context and no way to answer; the tools say so themselves.
+    # O REPL não tem contexto nem como responder; as ferramentas avisam sozinhas.
     if runtime.context is None:
         return Command(goto=[_to_tools(call, state) for call in message.tool_calls])
 
@@ -161,15 +162,15 @@ async def request_approval(state: AgentState, runtime: Runtime[AgentContext]) ->
                 ))
                 calls.append(call)
                 continue
-            # The user may have corrected the values before approving.
+            # O usuário pode ter corrigido os valores antes de aprovar.
             final = decision.get("args") or call["args"]
             edits[call["id"]] = _user_edits(call["name"], call["args"], final)
             call = {**call, "args": final}
         calls.append(call)
         approved.append(call)
 
-    # Same id, so `add_messages` replaces the model's message instead of
-    # appending: the history keeps the values the user actually approved.
+    # O mesmo id faz o `add_messages` substituir a mensagem do modelo em vez de
+    # acrescentar: o histórico fica com os valores que o usuário aprovou.
     revised = message.model_copy(update={"tool_calls": calls})
     update = {"messages": [revised, *cancelled]}
 
@@ -201,15 +202,14 @@ def compile_graph(
     """
     builder = (
         StateGraph(AgentState, context_schema=AgentContext)
-
-        # Nodes
-        .add_node("agent", agent_node(bind_model(tools), sections)) # Basic agent response
-        .add_node("approval", request_approval, destinations=("tools", "agent")) # Human in the loop
-        .add_node("tools", tools_node(tools)) # Tool calling
-
-        # Edges
-        .add_edge(START, "agent") # Startup
-        .add_conditional_edges("agent", route_after_model, ["approval", "tools", END]) # Writes need approval first
-        .add_edge("tools", "agent") # After the tool is called, always go back to the agent node
+        # O modelo responde ou pede ferramentas.
+        .add_node("agent", agent_node(bind_model(tools), sections))
+        # As gravações esperam aqui pela confirmação do usuário.
+        .add_node("approval", request_approval, destinations=("tools", "agent"))
+        .add_node("tools", tools_node(tools))
+        .add_edge(START, "agent")
+        .add_conditional_edges("agent", route_after_model, ["approval", "tools", END])
+        # Depois das ferramentas, o modelo sempre lê o resultado.
+        .add_edge("tools", "agent")
     )
     return builder.compile(checkpointer=checkpointer)
