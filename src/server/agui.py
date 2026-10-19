@@ -38,6 +38,7 @@ APPROVAL_TITLES = {
     "registrar_venda": "Registrar venda na carteira",
     "adicionar_watchlist": "Adicionar à watchlist",
     "remover_watchlist": "Remover da watchlist",
+    "definir_alocacao": "Definir a alocação-alvo",
 }
 
 # Campos que o usuário não corrige no cartão. Um ativo errado não é um valor a

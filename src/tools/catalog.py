@@ -13,8 +13,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from src.tools import analysis, market, portfolio
+from src.tools import allocation, analysis, market, portfolio
 from src.tools.context import ToolContext
+from src.tools.schemas.allocation import AllocationInput, AllocationViewInput, RebalanceInput
 from src.tools.schemas.analysis import AgendaInput, IncomeInput, PerformanceInput
 from src.tools.schemas.market import (
     CompanySearchInput,
@@ -187,6 +188,44 @@ CATALOG: list[ToolSpec] = [
         input_model=WatchViewInput,
         run=portfolio.view_watchlist,
         scope=READ,
+    ),
+    ToolSpec(
+        name="ver_enquadramento",
+        description=(
+            "Compara a carteira do usuário com a alocação-alvo dele: o valor e o peso de cada "
+            "classe de ativo (ações brasileiras, fundos listados, ETFs, exterior, cripto) em reais, "
+            "o alvo, o desvio e se cada classe está dentro, acima ou abaixo da banda de tolerância, "
+            "além do peso de cada ativo. Sem alocação-alvo definida, mostra só os pesos atuais. Use "
+            "quando o usuário perguntar se a carteira está enquadrada, equilibrada ou concentrada."
+        ),
+        input_model=AllocationViewInput,
+        run=allocation.view_allocation,
+        scope=READ,
+    ),
+    ToolSpec(
+        name="sugerir_rebalanceamento",
+        description=(
+            "Sugere as compras (e, se permitido, as vendas) que levariam a carteira à alocação-alvo "
+            "do usuário, usando primeiro o aporte informado, em reais. Devolve as ordens por ativo, "
+            "com quantidade e preço, o que sobra do aporte e as classes sem ativo na carteira, com "
+            "candidatos da watchlist. Não registra nada: para executar, registre cada ordem com "
+            "`registrar_compra` ou `registrar_venda`. Exige a alocação-alvo definida."
+        ),
+        input_model=RebalanceInput,
+        run=allocation.suggest_rebalance,
+        scope=READ,
+    ),
+    ToolSpec(
+        name="definir_alocacao",
+        description=(
+            "Grava a alocação-alvo do usuário: o peso de cada classe de ativo, em %, somando 100, e a "
+            "banda de tolerância, substituindo a anterior. Os pesos são escolha do usuário: pergunte "
+            "ou confirme com ele, sem decidir sozinho a partir do perfil. Ele confirma ou corrige "
+            "os valores antes de gravar."
+        ),
+        input_model=AllocationInput,
+        run=allocation.set_allocation,
+        scope=WRITE,
     ),
     ToolSpec(
         name="registrar_compra",

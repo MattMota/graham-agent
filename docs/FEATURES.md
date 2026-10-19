@@ -70,6 +70,10 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Confirmação das operações | ✅ Existente | Nó `approval` do grafo, interrupções do AG-UI | Um cartão por operação, com valores editáveis exceto o ativo e listas com busca para moeda e operação; o agente sugere a cotação atual para operações de hoje |
 | Cache com Redis | ✅ Existente | `src/storage/cache.py` | Notícias por 1h, buscas por 24h, cotações sem cache; as conversas ficam no Postgres, de propósito |
 | Streams retomáveis | ✅ Existente | `src/server/streams.py` | A execução roda em segundo plano; recarregar a página ou perder a conexão não interrompe a resposta. Fora do AG-UI, que não define retomada: `connect` e `Last-Event-ID` |
+| Alocação-alvo | ✅ Existente | `definir_alocacao`, `core.allocation_targets` | Peso de cada classe de ativo (ações brasileiras, fundos listados, ETFs, exterior, cripto), somando 100%, e banda de tolerância; confirmada no cartão. Definida pelo usuário, sem carteiras-modelo ([ADR 0004](adr/0004-alocacao-alvo-definida-pelo-usuario.md)) |
+| Enquadramento | ✅ Existente | `ver_enquadramento` | Peso de cada classe e de cada ativo em reais, contra o alvo, com desvio e situação; tabela na interface. A classe sai do tipo e do nome na Yahoo |
+| Rebalanceamento | ✅ Existente | `sugerir_rebalanceamento`, skill `rebalancear-carteira` | Ordens por ativo com o aporte e, se permitido, vendas; classes sem ativo trazem candidatos da watchlist. Só sugere: cada ordem é registrada depois, com o cartão |
+| Corrigir a classe de um ativo | ⏳ Pendente | | Se as regras pelo nome da Yahoo errarem com frequência, deixar o usuário escolher a classe de um ativo |
 
 ## Qualidade
 
@@ -105,5 +109,6 @@ Decidido não fazer, com o motivo. Uma linha sai daqui só revendo a decisão.
 | Langfuse instalado na máquina | A LangSmith gratuita, opcional e sem cartão, evita manter mais um serviço; desligada, nada sai da máquina | [ADR 0001](adr/0001-graham-roda-so-localmente.md) |
 | Deep Agents e multi-agente | Turnos curtos, de uma ou duas rodadas de ferramentas; a confirmação e o AG-UI dependem do grafo próprio | [ADR 0002](adr/0002-um-agente-so.md) |
 | RAGAS e DeepEval | Os evals conferem decisões objetivas; um juiz só entra para avaliar a resposta final, e então o DeepEval | [ADR 0003](adr/0003-evals-sem-framework-de-juiz.md) |
+| Carteiras-modelo por perfil | Pesos sugeridos pelo sistema seriam recomendação de investimento | [ADR 0004](adr/0004-alocacao-alvo-definida-pelo-usuario.md) |
 | Último dia com direito ao provento, pelo calendário da B3 | A agenda dá a data ex e a regra (o pregão anterior); calcular o dia exige manter os feriados da B3, e não vale a complexidade | Esta tabela |
 | Regras de estilo do ruff 0.17 | 144 avisos de estilo (106 de `Optional[X]` em vez de `X \| None`); o lint fica no conjunto clássico, que pega erros reais | `[tool.ruff.lint]` no `pyproject.toml` |

@@ -790,6 +790,9 @@ const TOOL_NAMES = {
   proventos: "proventos",
   desempenho: "desempenho",
   agenda_eventos: "agenda de eventos",
+  ver_enquadramento: "enquadramento",
+  sugerir_rebalanceamento: "rebalanceamento",
+  definir_alocacao: "alocação-alvo",
   guardar_memoria: "memória",
   buscar_memorias: "busca na memória",
   ver_memoria: "memória",
@@ -1410,11 +1413,115 @@ function agendaView(output) {
   return view;
 }
 
+/* Enquadramento e rebalanceamento: pesos em reais contra a alocação-alvo. */
+const ALLOCATION_STATUS = { dentro: "Dentro", acima: "Acima", abaixo: "Abaixo" };
+
+function points(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  const sign = value < 0 ? MINUS : value > 0 ? "+" : "";
+  return `${sign}${PERCENT_FORMAT.format(Math.abs(value))} p.p.`;
+}
+
+function percent(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `${PERCENT_FORMAT.format(value)}%` : "—";
+}
+
+function allocationView(output) {
+  if (!output || !Array.isArray(output.classes) || !("in_range" in output)) return null;
+  const view = document.createElement("div");
+  view.className = "tool-view";
+  const currency = output.base_currency || "BRL";
+
+  if (!output.total_value) {
+    view.append(emptyNote(output.note || "A carteira não tem posições em aberto."));
+    return view;
+  }
+  view.append(statsRow([
+    ["Valor na alocação", money(output.total_value, currency)],
+    ["Situação", output.in_range == null ? "Sem alocação-alvo" : output.in_range ? "Enquadrada" : "Desenquadrada"],
+    ["Banda de tolerância", output.tolerance == null ? "—" : `± ${PERCENT_FORMAT.format(output.tolerance)} p.p.`],
+  ]));
+  const targets = output.has_targets;
+  view.append(dataTable(
+    "Por classe",
+    [
+      { label: "Classe" }, { label: "Valor", numeric: true }, { label: "Peso", numeric: true },
+      ...(targets ? [{ label: "Alvo", numeric: true }, { label: "Desvio", numeric: true }, { label: "Situação" }] : []),
+    ],
+    output.classes.map((item) => [
+      item.label, money(item.value, currency), percent(item.weight_percent),
+      ...(targets ? [
+        percent(item.target_percent),
+        { text: points(item.deviation_pp), numeric: true },
+        { text: ALLOCATION_STATUS[item.status] || "—", className: item.status === "dentro" ? "" : "is-down" },
+      ] : []),
+    ]),
+  ));
+  if ((output.assets || []).length) {
+    const labels = Object.fromEntries(output.classes.map((item) => [item.asset_class, item.label]));
+    view.append(dataTable(
+      "Por ativo",
+      [{ label: "Ativo" }, { label: "Classe" }, { label: "Valor", numeric: true }, { label: "Peso", numeric: true }],
+      output.assets.map((item) => [
+        item.ticker_name, labels[item.asset_class] || item.asset_class, money(item.value, currency), percent(item.weight_percent),
+      ]),
+    ));
+  }
+  if ((output.outside_allocation || []).length) {
+    view.append(emptyNote(`Fora da alocação (classe não reconhecida): ${output.outside_allocation.join(", ")}.`));
+  }
+  if ((output.unavailable || []).length) {
+    view.append(emptyNote(`Sem cotação agora: ${output.unavailable.join(", ")}.`));
+  }
+  return view;
+}
+
+function rebalanceView(output) {
+  if (!output || !Array.isArray(output.orders)) return null;
+  const view = document.createElement("div");
+  view.className = "tool-view";
+  const currency = output.base_currency || "BRL";
+
+  view.append(statsRow([
+    ["Aporte", money(output.contribution, currency)],
+    ["Sobra", money(output.cash_left, currency)],
+    ["Vendas", output.allow_sales ? "Permitidas" : "Não"],
+  ]));
+  if (output.orders.length) {
+    view.append(dataTable(
+      "Ordens sugeridas",
+      [
+        { label: "Operação" }, { label: "Ativo" }, { label: "Quantidade", numeric: true },
+        { label: "Preço", numeric: true }, { label: "Valor", numeric: true },
+      ],
+      output.orders.map((order) => [
+        capitalize(order.side), order.ticker_name, quantity(order.quantity),
+        money(order.price, order.currency), money(order.amount, currency),
+      ]),
+    ));
+  } else {
+    view.append(emptyNote("Nenhuma ordem: a carteira já está no alvo ou o valor não compra uma unidade."));
+  }
+  for (const pending of output.unassigned || []) {
+    const candidates = pending.watchlist_candidates.length
+      ? ` Na watchlist: ${pending.watchlist_candidates.join(", ")}.` : "";
+    view.append(emptyNote(`${pending.label}: ${money(pending.amount, currency)} sem ativo na carteira.${candidates}`));
+  }
+  view.append(dataTable(
+    "Pesos por classe",
+    [{ label: "Classe" }, { label: "Alvo", numeric: true }, { label: "Antes", numeric: true }, { label: "Depois", numeric: true }],
+    output.classes.map((item) => [item.label, percent(item.target_percent), percent(item.weight_before), percent(item.weight_after)]),
+  ));
+  return view;
+}
+
 const TOOL_VIEWS = {
   ver_carteira: portfolioView,
   proventos: incomeView,
   desempenho: performanceView,
   agenda_eventos: agendaView,
+  ver_enquadramento: allocationView,
+  sugerir_rebalanceamento: rebalanceView,
 };
 
 /* ───────────────────────── Detalhe da chamada de ferramenta ─────────────── */

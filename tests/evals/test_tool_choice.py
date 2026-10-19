@@ -33,6 +33,9 @@ CASES = [
     ("Comprei hoje 100 ITUB4.SA a R$ 35,00.", {"registrar_compra", "ler_skill"}),
     ("A BBAS3.SA caiu muito esta semana. Por quê?", {"ler_skill", "desempenho", "noticias_acao", "noticias_tema"}),
     ("Guarde que o meu perfil de investidor é conservador.", {"guardar_memoria"}),
+    ("Minha carteira está enquadrada na minha alocação-alvo?", {"ver_enquadramento", "ler_skill"}),
+    ("Tenho R$ 5.000 para aportar. Onde coloco para voltar ao meu alvo?", {"sugerir_rebalanceamento", "ver_enquadramento", "ler_skill"}),
+    ("Quero 70% em ações brasileiras e 30% em fundos imobiliários.", {"definir_alocacao", "ler_skill"}),
     ("Oi, tudo bem?", {None}),
 ]
 

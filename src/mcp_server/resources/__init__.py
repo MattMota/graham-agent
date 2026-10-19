@@ -16,7 +16,7 @@ from typing import Any
 from mcp.server import MCPServer
 from yfinance.const import SECTOR_INDUSTY_MAPPING
 
-from src.tools import analysis, market
+from src.tools import allocation, analysis, market
 from src.tools.schemas.market import industry_key
 from src.tools.schemas.portfolio import CURRENCIES
 
@@ -39,6 +39,8 @@ def conventions() -> str:
 
 def _duration(seconds: int) -> str:
     hours = seconds // 3600
+    if hours >= 48 and hours % 24 == 0:
+        return f"{hours // 24} dias"
     return "1 hora" if hours == 1 else f"{hours} horas"
 
 
@@ -67,6 +69,7 @@ As respostas da Yahoo e do Google News ficam guardadas por um tempo, e duas cons
 | Proventos | {_duration(analysis.INCOME_TTL)} |
 | Datas de eventos (agenda e próxima data ex) | {_duration(analysis.EVENTS_TTL)} |
 | Busca de ticker e empresas por setor | {_duration(market.CATALOG_TTL)} |
+| Classe de ativo (tipo e nome na Yahoo) | {_duration(allocation.CLASS_TTL)} |
 
 Um resultado vazio não entra no cache: pode ser a fonte fora do ar, e a consulta seguinte tenta de novo.
 
@@ -76,6 +79,7 @@ Um resultado vazio não entra no cache: pode ser a fonte fora do ar, e a consult
 - Os proventos são os registrados na Yahoo, que pode não ter todos.
 - A agenda só traz o que a Yahoo já tem: a data ex depois do anúncio do provento, a data de pagamento em geral só para ativos americanos e, das empresas brasileiras, nem sempre o próximo resultado. Um ativo sem evento na agenda pode ter eventos que ainda não chegaram à fonte.
 - O desempenho compara no máximo 4 ativos, cada um na moeda da própria cotação.
+- A classe de ativo sai do tipo e do nome que a Yahoo dá, que marca FIIs e ETFs da B3 como ações; um ativo que as regras não reconhecem fica fora da alocação.
 """
 
 

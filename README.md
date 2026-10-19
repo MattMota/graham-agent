@@ -12,7 +12,7 @@ O projeto é de estudo. As cotações vêm com atraso e nada aqui é recomendaç
 
 Você pergunta em linguagem natural — *"Quanto vale BBAS3 hoje?"*, *"Notícias da Petrobras"*, *"Compare ouro e Bitcoin"* — e o agente decide sozinho quais consultas precisa fazer, executa e explica o resultado.
 
-Além do mercado, ele cuida da sua **carteira** e da **watchlist** (cada operação passa por um cartão de confirmação), calcula os **proventos** recebidos, compara o **desempenho** de ativos contra o índice, monta a **agenda** dos próximos resultados e datas ex e guarda uma **memória** do seu perfil e das conversas anteriores.
+Além do mercado, ele cuida da sua **carteira** e da **watchlist** (cada operação passa por um cartão de confirmação), calcula os **proventos** recebidos, compara o **desempenho** de ativos contra o índice, monta a **agenda** dos próximos resultados e datas ex, compara a carteira com a **alocação-alvo** que você definiu e sugere como **rebalanceá-la** com um aporte, e guarda uma **memória** do seu perfil e das conversas anteriores.
 
 A resposta chega **token a token**, com os dados aparecendo conforme são buscados. Ao final, os tickers citados viram cartões de cotação recolhíveis, e cada consulta feita pode ser aberta para inspeção (argumentos enviados e JSON devolvido).
 
@@ -36,6 +36,9 @@ As de mercado, análise, carteira e watchlist ficam no [servidor MCP](#servidor-
 | `proventos` | `ticker_name?`, `months` | Pagamentos pela data ex, total em 12 meses, dividend yield e próxima data ex; sem ticker, quanto a carteira recebeu |
 | `desempenho` | `tickers`, `period` ou `start_date`, `compare_index` | Retorno com e sem proventos, anualizado, volatilidade, maior queda, máxima e mínima, contra o Ibovespa ou o S&P 500 |
 | `agenda_eventos` | `tickers?`, `days` | Próximos resultados, datas ex e pagamentos, em ordem de data; sem tickers, os da carteira e da watchlist, com a origem e a quantidade |
+| `ver_enquadramento` | | Valor e peso de cada classe de ativo em reais, contra a alocação-alvo: desvio e se está dentro, acima ou abaixo da banda; e o peso de cada ativo |
+| `sugerir_rebalanceamento` | `contribution`, `allow_sales` | Ordens por ativo que levariam a carteira ao alvo, usando primeiro o aporte; o que sobra e as classes sem ativo, com candidatos da watchlist. Não registra nada |
+| `definir_alocacao` ✋ | `acoes_br`, `fundos`, `etfs`, `exterior`, `cripto`, `tolerance` | A alocação-alvo gravada: o peso de cada classe, somando 100%, e a banda de tolerância |
 | `guardar_memoria` | `fact`, `category` | Grava um fato duradouro sobre o usuário; embedding e substituição seguem em segundo plano |
 | `buscar_memorias` | `search_fact` | Fatos e trechos de conversas anteriores relacionados, por busca híbrida |
 | `ver_memoria` | `memory_id` | O conteúdo completo; numa conversa, as mensagens originais do turno |
@@ -222,6 +225,7 @@ A CI (`.github/workflows/ci.yml`) roda o ruff e a suíte, menos os evals, a cada
 ```
 main.py                      REPL de linha de comando
 compose.yaml                 Postgres 18 com pgvector, para desenvolvimento
+CONTEXT.md                   O vocabulário do domínio
 docs/
 ├── FEATURES.md              O mapa das features: existentes, pendentes e fora do escopo
 └── adr/                     As decisões, em especial o que ficou de fora e por quê
@@ -260,12 +264,14 @@ src/
 │   ├── skills_extension.py  Serve as skills pela extensão SEP-2640 e como prompts
 │   └── server.py            Servidor MCP: verificador de tokens e registro do catálogo
 ├── tools/                   As ferramentas publicadas pelo MCP, sem LangChain
+│   ├── allocation.py        Classe de ativo, enquadramento e rebalanceamento
 │   ├── analysis.py          Proventos (de um ativo ou da carteira), desempenho e agenda de eventos
 │   ├── catalog.py           Nome, descrição, entrada, função e escopo de cada uma
 │   ├── context.py           ToolContext (usuário e pool) e ToolFailure
 │   ├── market.py            Cotação, notícias e buscas no yfinance e no Google News
 │   ├── portfolio.py         Carteira e watchlist
 │   └── schemas/             Um módulo por domínio, como as ferramentas
+│       ├── allocation.py    Entrada da alocação-alvo e do rebalanceamento
 │       ├── analysis.py      Entrada de proventos, desempenho e agenda
 │       ├── common.py        Tipos usados por mais de um domínio (o ticker)
 │       ├── market.py        Entrada e saída das ferramentas de mercado (a saída normaliza o que a Yahoo devolve)
@@ -285,6 +291,7 @@ src/
 │       └── app.js           Cliente AG-UI, Markdown, histórico, ações e cartões de confirmação
 └── storage/
     ├── accounts.py          Contas e sessões
+    ├── allocation.py        Alocação-alvo do usuário
     ├── cache.py             Cliente do Redis e cache dos dados de mercado
     ├── database.py          Pool de conexões
     ├── conversations.py     Consultas sobre threads e mensagens
@@ -337,6 +344,8 @@ As ferramentas que gravam dados não rodam sem o usuário. Quando o modelo pede 
 A carteira é um **livro de operações** (`core.portfolio_trades`): cada compra e cada venda é uma linha que nunca muda. A posição de cada ativo sai da aplicação das operações em ordem de data, pelo **preço médio**, o critério da Receita e da B3: uma compra recalcula a média ponderada, e uma venda reduz a quantidade sem mexer nela. Uma venda que deixaria a posição negativa em qualquer data é recusada. O preço fica na **moeda em que o usuário pagou** (`price_currency`), que pode ser diferente da moeda em que a Yahoo cota o ativo (`quote_currency`): Bitcoin comprado em reais é `BTC-USD` com preço em BRL. O custo fica nessa moeda, e só o valor atual é convertido, pelo câmbio do momento da consulta (`USDBRL=X`), então nenhum câmbio histórico é necessário. Cada ativo usa uma só moeda de pagamento, para o preço médio não misturar moedas. Os totais são por moeda de pagamento.
 
 Na interface, a carteira, os proventos, o desempenho (com o gráfico) e a agenda de eventos ganham uma vista em tabela, que aparece depois da rodada de consultas e antes do texto da resposta; mais de uma vista no mesmo turno vem recolhida, cada uma sob um título. O JSON continua no detalhe da consulta. Cada ferramenta pode ganhar uma vista assim em `TOOL_VIEWS`, no `app.js`.
+
+**Alocação-alvo, enquadramento e rebalanceamento.** O usuário define o peso que quer para cada classe de ativo (ações brasileiras, fundos listados, ETFs, exterior, cripto), somando 100%, e uma banda de tolerância; a definição passa pelo cartão de confirmação, como uma operação, e fica em `core.allocation_targets`. O Graham não traz carteiras-modelo nem decide os pesos a partir do perfil ([ADR 0004](docs/adr/0004-alocacao-alvo-definida-pelo-usuario.md)). A classe de cada ativo sai do tipo e do nome na Yahoo, que marca FIIs e ETFs da B3 como ações: o nome separa os fundos ("Imobiliário", "Fiagro") e os ETFs ("Classe de Índice"), e o código separa os BDRs (final 31 a 35 ou 39). Os pesos são medidos em reais, pelo câmbio de agora, a única conta do Graham que soma moedas. `ver_enquadramento` compara cada classe com o alvo; `sugerir_rebalanceamento` calcula as ordens: sem vendas, o aporte vai às classes abaixo do alvo na proporção do que falta a cada uma; com vendas, cada classe volta ao alvo. Dentro da classe, o valor se divide na proporção do que o usuário já tem, e as quantidades são arredondadas para baixo. A sugestão não grava nada; a skill `rebalancear-carteira` leva o agente a registrar cada ordem com `registrar_compra` ou `registrar_venda`, de novo com o cartão.
 
 A watchlist (`core.watchlist`) guarda o ativo, a operação pretendida (`compra`, `venda` ou `short`), o preço alvo e, opcionalmente, a quantidade, que transforma o acompanhamento num plano. O mesmo ativo pode aparecer mais de uma vez, com operações ou alvos diferentes.
 
@@ -436,6 +445,7 @@ Os streams duram 1h no Redis (`graham:stream:{id}`), assim como a reserva da con
 | Datas de eventos | `graham:market:eventos:*` | 6h | Resultado, data ex e pagamento de um ativo; uma data ex pode ser anunciada para o dia seguinte |
 | Histórico de preços | `graham:market:historico:*` | 1h | |
 | Busca de ticker e triagem por setor | `graham:market:buscar_*:*` | 24h | Mudam raramente |
+| Classe de ativo | `graham:market:classe:*` | 7 dias | O tipo e o nome de um ativo na Yahoo quase nunca mudam |
 | Cotação | | | **Sem cache:** muda a todo momento, e um preço velho é pior do que nenhum |
 
 **Notícias pela busca da Yahoo.** Desde 2026, o feed de notícias por ticker da Yahoo responde 404, e o yfinance (até a 1.7.0) devolve a falha como uma lista vazia, igual a "não há notícias". O feed continua sendo a primeira tentativa; vazio, a ferramenta busca pelo nome da empresa, em algumas variações (`Petróleo Brasileiro S.A. - Petrobras` não encontra nada, `Petrobras` encontra), e fica só com as notícias marcadas com alguma listagem da empresa (a Petrobras aparece como `PBR` e `PBR-A`). Essas notícias não trazem resumo, e o resultado avisa o modelo para não ir além do título.
@@ -534,7 +544,7 @@ Os cartões não são gravados: ao reabrir uma conversa, as respostas e as consu
 
 ## Decisões que valem conhecer
 
-As decisões de arquitetura e de escopo, em especial o que ficou de fora e por quê, estão em [`docs/adr/`](docs/adr/): o Graham só local ([0001](docs/adr/0001-graham-roda-so-localmente.md)), um agente só, sem Deep Agents nem multi-agente ([0002](docs/adr/0002-um-agente-so.md)) e evals sem framework de juiz ([0003](docs/adr/0003-evals-sem-framework-de-juiz.md)). Abaixo, as de implementação.
+As decisões de arquitetura e de escopo, em especial o que ficou de fora e por quê, estão em [`docs/adr/`](docs/adr/): o Graham só local ([0001](docs/adr/0001-graham-roda-so-localmente.md)), um agente só, sem Deep Agents nem multi-agente ([0002](docs/adr/0002-um-agente-so.md)), evals sem framework de juiz ([0003](docs/adr/0003-evals-sem-framework-de-juiz.md)) e a alocação-alvo definida pelo usuário ([0004](docs/adr/0004-alocacao-alvo-definida-pelo-usuario.md)). Abaixo, as de implementação.
 
 **Ferramentas vinculadas ao compilar o grafo.** As ferramentas do MCP só são conhecidas na subida, ao listar o servidor, então `bind_model(tools)`, em `config/model.py`, liga o modelo a elas quando o grafo é compilado, e não na importação. O resultado é um binding, não um `BaseChatModel`; quem precisa do modelo puro (o processamento de memória, por exemplo) usa `chat_model()`, de `config/settings.py`.
 

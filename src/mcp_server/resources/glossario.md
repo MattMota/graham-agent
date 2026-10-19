@@ -39,3 +39,12 @@ O sentido exato de cada termo nos resultados das ferramentas, como elas o calcul
 - **Operação pretendida**: `compra` espera o preço cair até o alvo; `venda` e `short`, subir até ele.
 - **Distância até o alvo** (`distance_percent`): quanto a cotação atual está acima (positivo) ou abaixo (negativo) do preço alvo.
 - **Alvo atingido** (`reached`): a cotação já passou do alvo no sentido da operação.
+
+## Alocação
+
+- **Classe de ativo** (`asset_class`): o tipo de instrumento, pela Yahoo: `acoes_br` (ações e units da B3), `fundos` (FIIs, Fiagros e FI-Infra), `etfs` (da B3 e de fora), `exterior` (ações estrangeiras e BDRs) e `cripto`. O que não se encaixa fica em `outside_allocation`, fora da conta.
+- **Alocação-alvo**: o peso que o usuário quer para cada classe, somando 100%, definido e confirmado por ele com `definir_alocacao`. Não é recomendação nem carteira-modelo.
+- **Peso** (`weight_percent`): o valor da classe ou do ativo, em reais pelo câmbio de agora, sobre o valor dos ativos classificados.
+- **Desvio** (`deviation_pp`): o peso menos o alvo, em pontos percentuais.
+- **Enquadramento** (`status`, `in_range`): uma classe está `dentro` quando o desvio não passa da banda de tolerância (`tolerance`); a carteira está enquadrada quando todas estão dentro.
+- **Rebalanceamento**: as ordens que levariam os pesos ao alvo. Sem vendas, o aporte vai às classes abaixo do alvo, na proporção do que falta a cada uma; com vendas, cada classe volta ao alvo. Dentro da classe, o valor se divide na proporção do que o usuário já tem. As quantidades são arredondadas para baixo, e o resto fica em `cash_left`.

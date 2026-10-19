@@ -5,7 +5,7 @@ a cada sessão) e `TEST_REDIS_URL` (um banco do Redis diferente do 0, esvaziado
 no começo e no fim). Sem as duas, os testes desta pasta são pulados.
 
 O servidor roda numa thread deste processo, então as fontes externas são
-trocadas por versões fixas: o modelo segue um roteiro, a cotação e as datas
+trocadas por versões fixas: o modelo segue um roteiro, a cotação, a classe e as datas
 de eventos vêm de tabelas, e os embeddings são vetores fixos. A Yahoo e o
 provedor do modelo nunca são chamados.
 """
@@ -68,6 +68,8 @@ TODAY = date.today()
 QUOTES = {
     "PETR4.SA": {"company_name": "Petrobras", "currency": "BRL", "price": 31.2},
     "VALE3.SA": {"company_name": "Vale", "currency": "BRL", "price": 60.5},
+    "MXRF11.SA": {"company_name": "Maxi Renda Fundo De Investimento Imobiliaro - FII", "currency": "BRL", "price": 10.0},
+    "BOVA11.SA": {"company_name": "ISHARES IBOVESPA CLASSE DE ÍNDICE", "currency": "BRL", "price": 100.0},
 }
 
 EVENTS = {
@@ -89,6 +91,11 @@ def fake_quote(ticker_name: str) -> dict:
 async def fake_embed(texts: list[str]) -> list[list[float]]:
     # Vetores INT8 de 1.024 dimensões, como os do modelo de verdade, sem o provedor.
     return [[float((len(text) + index) % 7 - 3) for index in range(1024)] for text in texts]
+
+
+def fake_asset_info(ticker: str) -> dict:
+    quote = QUOTES.get(ticker)
+    return {"quote_type": "EQUITY" if quote else None, "name": quote and quote["company_name"]}
 
 
 def fake_events(ticker: str) -> dict:
@@ -125,13 +132,14 @@ def server(model):
 
     from src.agent.memory import processing
     from src.agent.runtime import state_graph
-    from src.tools import analysis, market
+    from src.tools import allocation, analysis, market
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(state_graph, "bind_model", lambda tools: model)
         patch.setattr(market, "get_current_stock_price", fake_quote)
         patch.setattr(analysis, "_events", fake_events)
         patch.setattr(processing, "embed", fake_embed)
+        patch.setattr(allocation, "_asset_info", fake_asset_info)
 
         from src.server.app import app
 
