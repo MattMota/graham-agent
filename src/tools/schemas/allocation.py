@@ -1,8 +1,11 @@
-"""Schemas de entrada das ferramentas de alocação: alvo, enquadramento e rebalanceamento."""
+"""Schemas de entrada das ferramentas de alocação: alvo, classe de um ativo,
+enquadramento e rebalanceamento."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from src.tools.schemas.common import TickerSymbol
 
 
 def _weight(title: str, description: str):
@@ -57,3 +60,35 @@ class RebalanceInput(BaseModel):
             "corrige os pesos, indo para as classes abaixo do alvo."
         ),
     )
+
+
+# Rótulos que a interface mostra no lugar dos valores, no cartão de confirmação.
+ASSET_CLASS_LABELS = {
+    "acoes_br": "Ações brasileiras",
+    "fundos": "Fundos listados",
+    "etfs": "ETFs",
+    "exterior": "Exterior",
+    "cripto": "Cripto",
+    "fora": "Fora da alocação",
+    "automatica": "Automática (pelo tipo e nome na Yahoo)",
+}
+
+
+class AssetClassInput(BaseModel):
+    """A classe que o usuário escolhe para um ativo, no lugar da automática."""
+
+    ticker_name: TickerSymbol
+    asset_class: Literal["acoes_br", "fundos", "etfs", "exterior", "cripto", "fora", "automatica"] = Field(
+        title="Classe",
+        description=(
+            "A classe em que o ativo conta na alocação: 'acoes_br', 'fundos', 'etfs', 'exterior' "
+            "ou 'cripto'; 'fora' para deixá-lo fora da conta; 'automatica' para voltar à classe "
+            "que sai do tipo e do nome na Yahoo."
+        ),
+        json_schema_extra={"x-labels": ASSET_CLASS_LABELS},
+    )
+
+    @field_validator("ticker_name")
+    @classmethod
+    def _clean(cls, value: str) -> str:
+        return value.strip().upper()

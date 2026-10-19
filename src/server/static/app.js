@@ -793,6 +793,7 @@ const TOOL_NAMES = {
   ver_enquadramento: "enquadramento",
   sugerir_rebalanceamento: "rebalanceamento",
   definir_alocacao: "alocação-alvo",
+  definir_classe_ativo: "classe do ativo",
   guardar_memoria: "memória",
   buscar_memorias: "busca na memória",
   ver_memoria: "memória",
@@ -1461,15 +1462,23 @@ function allocationView(output) {
     const labels = Object.fromEntries(output.classes.map((item) => [item.asset_class, item.label]));
     view.append(dataTable(
       "Por ativo",
-      [{ label: "Ativo" }, { label: "Classe" }, { label: "Valor", numeric: true }, { label: "Peso", numeric: true }],
+      [
+        { label: "Ativo" }, { label: "Classe" }, { label: "Origem" },
+        { label: "Valor", numeric: true }, { label: "Peso", numeric: true },
+      ],
       output.assets.map((item) => [
-        item.ticker_name, labels[item.asset_class] || item.asset_class, money(item.value, currency), percent(item.weight_percent),
+        item.ticker_name, labels[item.asset_class] || item.asset_class,
+        item.class_source === "usuario" ? "sua escolha" : "automática",
+        money(item.value, currency), percent(item.weight_percent),
       ]),
     ));
   }
-  if ((output.outside_allocation || []).length) {
-    view.append(emptyNote(`Fora da alocação (classe não reconhecida): ${output.outside_allocation.join(", ")}.`));
-  }
+  // `fora`: o usuário tirou o ativo da conta; `outros`: as regras não o reconheceram.
+  const outside = output.outside_allocation || [];
+  const chosen = outside.filter((item) => item.asset_class === "fora").map((item) => item.ticker_name);
+  const unknown = outside.filter((item) => item.asset_class !== "fora").map((item) => item.ticker_name);
+  if (chosen.length) view.append(emptyNote(`Fora da alocação, por escolha sua: ${chosen.join(", ")}.`));
+  if (unknown.length) view.append(emptyNote(`Fora da alocação, classe não reconhecida: ${unknown.join(", ")}.`));
   if ((output.unavailable || []).length) {
     view.append(emptyNote(`Sem cotação agora: ${output.unavailable.join(", ")}.`));
   }

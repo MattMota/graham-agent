@@ -56,8 +56,12 @@ _Avoid_: calendário
 ## Alocação
 
 **Classe de ativo**:
-O grupo em que a alocação classifica um ativo pelo tipo de instrumento: ações brasileiras, fundos listados (FIIs, Fiagros, FI-Infra), ETFs (da B3 e de fora), exterior (ações estrangeiras e BDRs) ou cripto.
+O grupo em que a alocação conta um ativo: ações brasileiras, fundos listados (FIIs, Fiagros, FI-Infra), ETFs (da B3 e de fora), exterior (ações estrangeiras e BDRs) ou cripto. Automática pelo tipo de instrumento, a menos que o usuário tenha escolhido outra para aquele ativo.
 _Avoid_: setor, categoria
+
+**Classe escolhida**:
+A classe que o usuário definiu para um ativo, no lugar da automática; vale só para a carteira dele. Pode ser "fora", que tira o ativo da conta.
+_Avoid_: reclassificação, override
 
 **Alocação-alvo**:
 O peso que o usuário quer para cada classe de ativo na carteira, somando 100%, com uma banda de tolerância. Definida e confirmada pelo usuário.

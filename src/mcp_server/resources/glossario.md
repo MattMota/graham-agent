@@ -42,7 +42,7 @@ O sentido exato de cada termo nos resultados das ferramentas, como elas o calcul
 
 ## Alocação
 
-- **Classe de ativo** (`asset_class`): o tipo de instrumento, pela Yahoo: `acoes_br` (ações e units da B3), `fundos` (FIIs, Fiagros e FI-Infra), `etfs` (da B3 e de fora), `exterior` (ações estrangeiras e BDRs) e `cripto`. O que não se encaixa fica em `outside_allocation`, fora da conta.
+- **Classe de ativo** (`asset_class`): o tipo de instrumento, pela Yahoo: `acoes_br` (ações e units da B3), `fundos` (FIIs, Fiagros e FI-Infra), `etfs` (da B3 e de fora), `exterior` (ações estrangeiras e BDRs) e `cripto`. A classe é automática, pelo tipo e pelo nome na Yahoo (`class_source` `automatica`), ou escolhida pelo usuário para aquele ativo com `definir_classe_ativo` (`usuario`). O que as regras não reconhecem, ou o que o usuário marcou como `fora`, fica em `outside_allocation`, fora da conta.
 - **Alocação-alvo**: o peso que o usuário quer para cada classe, somando 100%, definido e confirmado por ele com `definir_alocacao`. Não é recomendação nem carteira-modelo.
 - **Peso** (`weight_percent`): o valor da classe ou do ativo, em reais pelo câmbio de agora, sobre o valor dos ativos classificados.
 - **Desvio** (`deviation_pp`): o peso menos o alvo, em pontos percentuais.

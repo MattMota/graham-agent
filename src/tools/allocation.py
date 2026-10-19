@@ -1,6 +1,9 @@
 """Alocação: a classe de cada ativo, o enquadramento da carteira na alocação-alvo
 e a sugestão de rebalanceamento (docs/adr/0004).
 
+A classe de um ativo é a que o usuário escolheu para ele, se houver; senão, a
+automática, que sai do tipo e do nome na Yahoo.
+
 Os pesos são medidos em reais, pelo câmbio de agora: é a única conta do Graham
 que soma moedas diferentes. Nada aqui grava operações; o rebalanceamento só
 sugere, e cada compra ou venda passa depois pelas ferramentas de registro.
@@ -29,6 +32,7 @@ CLASS_LABELS = {
     "etfs": "ETFs",
     "exterior": "Exterior",
     "cripto": "Cripto",
+    "fora": "Fora da alocação",
     "outros": "Outros",
 }
 
@@ -41,7 +45,11 @@ BDR_CODE = re.compile(r"[A-Z0-9]{4}(3[1-5]|39)")
 ENQUADRAMENTO_NOTE = (
     "Pesos em reais, pelas cotações e pelo câmbio de agora, sobre o valor dos ativos "
     "classificados; os de `outside_allocation` ficam fora da conta. Uma classe está "
-    "`dentro` quando o peso fica a até `tolerance` pontos percentuais do alvo."
+    "`dentro` quando o peso fica a até `tolerance` pontos percentuais do alvo. A classe de "
+    "cada ativo é automática (pelo tipo e pelo nome na Yahoo, `class_source` `automatica`) "
+    "ou escolhida pelo usuário (`usuario`); se uma classe automática não for como o usuário "
+    "vê o ativo (um ETF de S&P 500 contado como exterior, por exemplo), ele a corrige com "
+    "`definir_classe_ativo`."
 )
 
 REBALANCE_NOTE = (
@@ -82,10 +90,14 @@ def classify(ticker: str, quote_type: Optional[str], name: Optional[str]) -> str
     if BDR_CODE.fullmatch(ticker.removesuffix(".SA")):
         return "exterior"
     plain = _plain(name)
-    # Antes dos fundos: ETFs antigos se chamam "fundo de índice".
+    # Antes do "índice": um FII pode tê-lo no nome (Kinea Índices de Preços).
+    if "imobili" in plain or "fiagro" in plain:
+        return "fundos"
+    # Antes de "fundo": ETFs antigos se chamam "fundo de índice".
     if "indice" in plain or re.search(r"\betf\b", plain):
         return "etfs"
-    if "fundo" in plain or "fiagro" in plain or "imobili" in plain:
+    # FI-Infra às vezes só traz as siglas ("Capitania Infra Fic Fi Infra").
+    if "fundo" in plain or re.search(r"\b(fi|fic|fidc)\b", plain):
         return "fundos"
     return "acoes_br"
 
@@ -97,9 +109,21 @@ def _asset_info(ticker: str) -> dict[str, Any]:
     return {"quote_type": info.get("quoteType"), "name": info.get("longName") or info.get("shortName")}
 
 
-async def asset_class(ticker: str) -> str:
+async def automatic_class(ticker: str) -> str:
     info = await asyncio.to_thread(_asset_info, ticker)
     return classify(ticker, info["quote_type"], info["name"])
+
+
+def _with_overrides(assets: list[dict[str, Any]], overrides: dict[str, str]) -> list[dict[str, Any]]:
+    """A classe escolhida pelo usuário no lugar da automática, dizendo de onde veio cada uma."""
+    return [
+        {
+            **asset,
+            "asset_class": overrides.get(asset["ticker_name"], asset["asset_class"]),
+            "class_source": "usuario" if asset["ticker_name"] in overrides else "automatica",
+        }
+        for asset in assets
+    ]
 
 
 # A carteira em reais ───────────────────────────────────────────────────────
@@ -114,7 +138,7 @@ async def _holdings(context: ToolContext) -> tuple[list[dict[str, Any]], list[st
     ]
     quotes, classes = await asyncio.gather(
         asyncio.gather(*(portfolio._quote(position.ticker) for position in positions)),
-        asyncio.gather(*(asset_class(position.ticker) for position in positions)),
+        asyncio.gather(*(automatic_class(position.ticker) for position in positions)),
     )
     currencies = sorted({(quote or {}).get("currency") or position.quote_currency
                          for position, quote in zip(positions, quotes)})
@@ -192,9 +216,37 @@ async def set_allocation(
     }
 
 
+async def set_asset_class(context: ToolContext, ticker_name: str, asset_class: str) -> dict[str, Any]:
+    pool, user_id = context.require_user()
+    info = await asyncio.to_thread(_asset_info, ticker_name)
+    if info["quote_type"] is None:
+        raise ToolFailure(
+            f"Ticker '{ticker_name}' não encontrado na Yahoo Finance. Ações brasileiras usam o "
+            "sufixo '.SA'; busque o ticker pelo nome da empresa se preciso."
+        )
+    automatic = classify(ticker_name, info["quote_type"], info["name"])
+
+    if asset_class == "automatica":
+        await targets_store.remove_override(pool, user_id, ticker_name)
+        effective, source = automatic, "automatica"
+    else:
+        await targets_store.set_override(pool, user_id, ticker_name, asset_class)
+        effective, source = asset_class, "usuario"
+    return {
+        "ticker_name": ticker_name,
+        "asset_class": effective,
+        "label": CLASS_LABELS[effective],
+        "class_source": source,
+        "automatic_class": automatic,
+    }
+
+
 async def view_allocation(context: ToolContext) -> dict[str, Any]:
     pool, user_id = context.require_user()
-    (assets, missing), row = await asyncio.gather(_holdings(context), targets_store.get_targets(pool, user_id))
+    (assets, missing), row, overrides = await asyncio.gather(
+        _holdings(context), targets_store.get_targets(pool, user_id), targets_store.list_overrides(pool, user_id)
+    )
+    assets = _with_overrides(assets, overrides)
     targets, tolerance = _targets(row) if row else (None, None)
 
     values = _by_class(assets)
@@ -226,6 +278,7 @@ async def view_allocation(context: ToolContext) -> dict[str, Any]:
             {
                 "ticker_name": asset["ticker_name"],
                 "asset_class": asset["asset_class"],
+                "class_source": asset["class_source"],
                 "value": _round(asset["value"]),
                 "weight_percent": _round(asset["value"] / total * 100) if total else None,
             }
@@ -242,7 +295,10 @@ async def view_allocation(context: ToolContext) -> dict[str, Any]:
             "usuário define e confirma a alocação-alvo por `definir_alocacao`. " + ENQUADRAMENTO_NOTE
         )
     if outside:
-        output["outside_allocation"] = [asset["ticker_name"] for asset in outside]
+        # `fora`: o usuário tirou o ativo da conta; `outros`: as regras não o reconheceram.
+        output["outside_allocation"] = [
+            {"ticker_name": asset["ticker_name"], "asset_class": asset["asset_class"]} for asset in outside
+        ]
     if missing:
         output["unavailable"] = missing
     return output
@@ -262,9 +318,13 @@ async def suggest_rebalance(
     context: ToolContext, contribution: float = 0, allow_sales: bool = False
 ) -> dict[str, Any]:
     pool, user_id = context.require_user()
-    (assets, missing), row, watch = await asyncio.gather(
-        _holdings(context), targets_store.get_targets(pool, user_id), store.list_watch(pool, user_id)
+    (assets, missing), row, watch, overrides = await asyncio.gather(
+        _holdings(context),
+        targets_store.get_targets(pool, user_id),
+        store.list_watch(pool, user_id),
+        targets_store.list_overrides(pool, user_id),
     )
+    assets = _with_overrides(assets, overrides)
     if row is None:
         raise ToolFailure(
             "O usuário ainda não definiu a alocação-alvo. Combine os pesos com ele e grave-os "
@@ -294,7 +354,8 @@ async def suggest_rebalance(
     watched: dict[str, list[str]] = {}
     for entry in watch:
         if entry["operation"] == "compra":
-            watched.setdefault(await asset_class(entry["ticker"]), []).append(entry["ticker"])
+            ticker = entry["ticker"]
+            watched.setdefault(overrides.get(ticker) or await automatic_class(ticker), []).append(ticker)
 
     orders, unassigned = [], []
     for name, amount in amounts.items():

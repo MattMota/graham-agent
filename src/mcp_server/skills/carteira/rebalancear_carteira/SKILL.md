@@ -8,6 +8,7 @@ description: Verificar se a carteira está na alocação-alvo do usuário e suge
 A alocação-alvo é do usuário: o peso de cada classe de ativo e a banda de tolerância que ele escolheu. Você não decide os pesos nem sugere carteiras-modelo; o que vai para a carteira, ele confirma.
 
 1. **Veja o enquadramento.** Chame `ver_enquadramento`. Pronto quando souber o peso de cada classe e se há alocação-alvo (`has_targets`).
+   - A classe de cada ativo é automática, pelo tipo do instrumento: um ETF de S&P 500 conta como ETF, não como exterior. Se o usuário vir um ativo de outro jeito, ou quiser tirá-lo da conta, corrija com `definir_classe_ativo` (ele confirma no cartão) e veja o enquadramento de novo.
 2. **Sem alocação-alvo, combine-a com o usuário.** Mostre os pesos atuais e pergunte quanto ele quer em cada classe (ações brasileiras, fundos listados, ETFs, exterior, cripto) e a banda de tolerância (5 pontos percentuais, se ele não disser). O perfil do investidor guardado na memória pode orientar a conversa, não os números. Grave com `definir_alocacao`, que soma 100%; o usuário confirma no cartão. Pronto quando a ferramenta devolver a alocação gravada.
 3. **Sugira o rebalanceamento.** Chame `sugerir_rebalanceamento` com o aporte que o usuário mencionou (`contribution`, em reais). Só passe `allow_sales` quando ele aceitar vender. Pronto quando houver as ordens sugeridas.
 4. **Responda nesta estrutura:**

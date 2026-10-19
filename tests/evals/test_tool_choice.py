@@ -36,6 +36,7 @@ CASES = [
     ("Minha carteira está enquadrada na minha alocação-alvo?", {"ver_enquadramento", "ler_skill"}),
     ("Tenho R$ 5.000 para aportar. Onde coloco para voltar ao meu alvo?", {"sugerir_rebalanceamento", "ver_enquadramento", "ler_skill"}),
     ("Quero 70% em ações brasileiras e 30% em fundos imobiliários.", {"definir_alocacao", "ler_skill"}),
+    ("Quero que o IVVB11.SA conte como exterior na minha alocação, não como ETF.", {"definir_classe_ativo", "ler_skill"}),
     ("Oi, tudo bem?", {None}),
 ]
 

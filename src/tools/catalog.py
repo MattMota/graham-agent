@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from src.tools import allocation, analysis, market, portfolio
 from src.tools.context import ToolContext
-from src.tools.schemas.allocation import AllocationInput, AllocationViewInput, RebalanceInput
+from src.tools.schemas.allocation import AllocationInput, AllocationViewInput, AssetClassInput, RebalanceInput
 from src.tools.schemas.analysis import AgendaInput, IncomeInput, PerformanceInput
 from src.tools.schemas.market import (
     CompanySearchInput,
@@ -225,6 +225,19 @@ CATALOG: list[ToolSpec] = [
         ),
         input_model=AllocationInput,
         run=allocation.set_allocation,
+        scope=WRITE,
+    ),
+    ToolSpec(
+        name="definir_classe_ativo",
+        description=(
+            "Escolhe a classe em que um ativo conta na alocação do usuário, no lugar da automática "
+            "(que sai do tipo e do nome na Yahoo): por exemplo, um ETF de S&P 500 contado como "
+            "exterior. Com 'fora', o ativo sai da conta; com 'automatica', volta à classe automática. "
+            "Use quando o usuário discordar da classe de um ativo no enquadramento. Ele confirma "
+            "ou corrige antes de gravar."
+        ),
+        input_model=AssetClassInput,
+        run=allocation.set_asset_class,
         scope=WRITE,
     ),
     ToolSpec(

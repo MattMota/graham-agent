@@ -90,3 +90,59 @@ def test_cartao_do_alvo_grava_os_pesos_corrigidos(user, model, database):
         (user.email,),
     ).fetchone()
     assert tuple(map(float, row)) == (50.0, 30.0, 20.0, 5.0)
+
+
+async def test_classe_escolhida_muda_o_enquadramento_e_pode_ser_desfeita(server, user):
+    async with connect(server, key(user, can_write=True)) as client:
+        # R$ 3.900 de cada, pelas cotações de teste (PETR4 a 31,20 e BOVA11 a 100).
+        await buy(client, "PETR4.SA", 125, 30)
+        await buy(client, "BOVA11.SA", 39, 100)
+
+        chosen = output(await client.call_tool("definir_classe_ativo", {"ticker_name": "bova11.sa", "asset_class": "exterior"}))
+        assert (chosen["asset_class"], chosen["class_source"], chosen["automatic_class"]) == ("exterior", "usuario", "etfs")
+        moved = output(await client.call_tool("ver_enquadramento", {}))
+
+        output(await client.call_tool("definir_classe_ativo", {"ticker_name": "BOVA11.SA", "asset_class": "fora"}))
+        excluded = output(await client.call_tool("ver_enquadramento", {}))
+
+        output(await client.call_tool("definir_classe_ativo", {"ticker_name": "BOVA11.SA", "asset_class": "automatica"}))
+        restored = output(await client.call_tool("ver_enquadramento", {}))
+
+    weights = lambda result: {item["asset_class"]: item["weight_percent"] for item in result["classes"]}  # noqa: E731
+    assert weights(moved)["exterior"] == 50.0 and weights(moved)["etfs"] == 0.0
+    assert {item["ticker_name"]: item["class_source"] for item in moved["assets"]}["BOVA11.SA"] == "usuario"
+    assert excluded["outside_allocation"] == [{"ticker_name": "BOVA11.SA", "asset_class": "fora"}]
+    assert weights(excluded)["acoes_br"] == 100.0
+    assert weights(restored)["etfs"] == 50.0 and "outside_allocation" not in restored
+
+
+async def test_classe_de_ativo_que_a_yahoo_nao_conhece_e_recusada(server, user):
+    async with connect(server, key(user, can_write=True)) as client:
+        result = await client.call_tool("definir_classe_ativo", {"ticker_name": "XXXX9.SA", "asset_class": "fundos"})
+
+    assert result.is_error and "não encontrado" in result.content[0].text
+
+
+def test_cartao_da_classe_trava_o_ativo_e_grava_a_classe_corrigida(user, model, database):
+    model.script = [calls(("definir_classe_ativo", {"ticker_name": "BOVA11.SA", "asset_class": "exterior"})), says("Feito.")]
+    thread_id = str(uuid.uuid4())
+
+    [interrupt] = run(user, thread_id, text="Conte o BOVA11 como exterior.")[-1]["outcome"]["interrupts"]
+    assert interrupt["message"] == "Definir a classe do ativo"
+    assert interrupt["metadata"]["graham"]["locked"] == ["ticker_name"]
+    options = interrupt["responseSchema"]["properties"]["editedArgs"]["properties"]["asset_class"]
+    assert "fora" in options["enum"] and options["x-labels"]["fora"] == "Fora da alocação"
+
+    run(user, thread_id, resume=[{
+        "interruptId": interrupt["id"], "status": "resolved",
+        "payload": {"approved": True, "editedArgs": {"ticker_name": "BOVA11.SA", "asset_class": "fora"}},
+    }])
+
+    row = database.execute(
+        """
+        select o.ticker, o.asset_class from core.asset_class_overrides o
+        join core.users u on u.id = o.user_id where u.email = %s
+        """,
+        (user.email,),
+    ).fetchone()
+    assert row == ("BOVA11.SA", "fora")

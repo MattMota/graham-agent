@@ -39,6 +39,7 @@ APPROVAL_TITLES = {
     "adicionar_watchlist": "Adicionar à watchlist",
     "remover_watchlist": "Remover da watchlist",
     "definir_alocacao": "Definir a alocação-alvo",
+    "definir_classe_ativo": "Definir a classe do ativo",
 }
 
 # Campos que o usuário não corrige no cartão. Um ativo errado não é um valor a

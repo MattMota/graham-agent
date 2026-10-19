@@ -74,7 +74,7 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Alocação-alvo | ✅ Existente | `definir_alocacao`, `core.allocation_targets` | Peso de cada classe de ativo (ações brasileiras, fundos listados, ETFs, exterior, cripto), somando 100%, e banda de tolerância; confirmada no cartão. Definida pelo usuário, sem carteiras-modelo ([ADR 0004](adr/0004-alocacao-alvo-definida-pelo-usuario.md)) |
 | Enquadramento | ✅ Existente | `ver_enquadramento` | Peso de cada classe e de cada ativo em reais, contra o alvo, com desvio e situação; tabela na interface. A classe sai do tipo e do nome na Yahoo |
 | Rebalanceamento | ✅ Existente | `sugerir_rebalanceamento`, skill `rebalancear-carteira` | Ordens por ativo com o aporte e, se permitido, vendas; classes sem ativo trazem candidatos da watchlist. Só sugere: cada ordem é registrada depois, com o cartão |
-| Corrigir a classe de um ativo | ⏳ Pendente | | Se as regras pelo nome da Yahoo errarem com frequência, deixar o usuário escolher a classe de um ativo |
+| Classe escolhida por ativo | ✅ Existente | `definir_classe_ativo`, `core.asset_class_overrides` | A classe automática é a do instrumento (o IVVB11 é ETF, não exterior); o usuário escolhe outra para um ativo, ou o tira da conta, com o cartão. Vale só para ele |
 
 ## Qualidade
 

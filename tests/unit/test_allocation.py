@@ -19,6 +19,12 @@ from src.tools.schemas.allocation import AllocationInput
         ("MXRF11.SA", "EQUITY", "Maxi Renda Fundo De Investimento Imobiliaro - FII", "fundos"),
         ("KNRI11.SA", "EQUITY", "Kinea Renda Imobiliária Fundo de Investimento Imobiliário", "fundos"),
         ("RZAG11.SA", "EQUITY", "Riza Agro Fiagro", "fundos"),
+        # Um FII com "índice" no nome, e um FI-Infra só com as siglas.
+        ("KNIP11.SA", "EQUITY", "Kinea Indices Precos Fundo Investimento Imobiliario - FII", "fundos"),
+        ("CPTI11.SA", "EQUITY", "Capitania Infra Fic Fi Infra Rf Cp", "fundos"),
+        ("KDIF11.SA", "EQUITY", "Kinea Infra Fundo Investimento Cotas Fundos Investimento Direitos Creditorios Infraestrutura", "fundos"),
+        ("HASH11.SA", "EQUITY", "HASHDEX NASDAQ CME CRYPTO INDEX FUNDO DE ÍNDICE - RESPONSABILIDADE LIMITADA", "etfs"),
+        ("KLBN11.SA", "EQUITY", "Klabin S.A.", "acoes_br"),
         ("BOVA11.SA", "EQUITY", "ISHARES IBOVESPA CLASSE DE ÍNDICE - RESPONSABILIDADE LIMITADA", "etfs"),
         ("BOVV11.SA", "EQUITY", "It Now Ibovespa Fundo de Índice", "etfs"),
         ("AAPL34.SA", "EQUITY", "Apple Inc.", "exterior"),
@@ -55,7 +61,7 @@ def targets(**weights):
 @pytest.fixture
 def portfolio(monkeypatch):
     """A carteira, o alvo e a watchlist que o teste escrever, sem banco nem Yahoo."""
-    state = {"assets": [], "missing": [], "targets": None, "watch": [], "classes": {}}
+    state = {"assets": [], "missing": [], "targets": None, "watch": [], "classes": {}, "overrides": {}}
 
     async def holdings(context):
         return state["assets"], state["missing"]
@@ -66,13 +72,17 @@ def portfolio(monkeypatch):
     async def list_watch(pool, user_id):
         return state["watch"]
 
-    async def asset_class(ticker):
+    async def automatic_class(ticker):
         return state["classes"][ticker]
+
+    async def list_overrides(pool, user_id):
+        return state["overrides"]
 
     monkeypatch.setattr(allocation, "_holdings", holdings)
     monkeypatch.setattr(allocation.targets_store, "get_targets", get_targets)
     monkeypatch.setattr(allocation.store, "list_watch", list_watch)
-    monkeypatch.setattr(allocation, "asset_class", asset_class)
+    monkeypatch.setattr(allocation, "automatic_class", automatic_class)
+    monkeypatch.setattr(allocation.targets_store, "list_overrides", list_overrides)
     return state
 
 
@@ -181,3 +191,44 @@ async def test_sem_cotacao_de_algum_ativo_a_conta_nao_fecha(portfolio):
 
     with pytest.raises(ToolFailure, match="XPTO3.SA"):
         await allocation.suggest_rebalance(USER)
+
+
+async def test_classe_escolhida_pelo_usuario_vale_mais_que_a_automatica(portfolio):
+    # O IVVB11 é um ETF pela regra; o usuário o conta como exterior. O MXRF11 ele tira da conta.
+    portfolio["assets"] = [*HOLDINGS, asset("IVVB11.SA", "etfs", 50, 400)]
+    portfolio["overrides"] = {"IVVB11.SA": "exterior", "MXRF11.SA": "fora"}
+    portfolio["targets"] = targets(acoes_br=60, etfs=20, exterior=20)
+
+    output = await allocation.view_allocation(USER)
+
+    by_class = {item["asset_class"]: item for item in output["classes"]}
+    assert output["total_value"] == 100_000  # 60 mil + 20 mil + 20 mil, sem os 20 mil do MXRF11
+    assert by_class["exterior"]["value"] == 20_000 and by_class["exterior"]["status"] == "dentro"
+    assert by_class["fundos"]["value"] == 0
+    assert output["in_range"] is True
+    sources = {item["ticker_name"]: item["class_source"] for item in output["assets"]}
+    assert sources == {"PETR4.SA": "automatica", "BOVA11.SA": "automatica", "IVVB11.SA": "usuario"}
+    assert output["outside_allocation"] == [{"ticker_name": "MXRF11.SA", "asset_class": "fora"}]
+
+
+async def test_ativo_fora_da_alocacao_nao_recebe_nem_perde_no_rebalanceamento(portfolio):
+    portfolio["assets"] = HOLDINGS
+    portfolio["overrides"] = {"MXRF11.SA": "fora"}
+    portfolio["targets"] = targets(acoes_br=50, etfs=50)
+
+    output = await allocation.suggest_rebalance(USER, allow_sales=True)
+
+    assert "MXRF11.SA" not in {order["ticker_name"] for order in output["orders"]}
+
+
+async def test_candidato_da_watchlist_segue_a_classe_escolhida(portfolio):
+    portfolio["assets"] = HOLDINGS
+    portfolio["targets"] = targets(acoes_br=40, fundos=20, etfs=20, exterior=20)
+    portfolio["watch"] = [{"ticker": "IVVB11.SA", "operation": "compra"}]
+    portfolio["classes"] = {"IVVB11.SA": "etfs"}
+    portfolio["overrides"] = {"IVVB11.SA": "exterior"}
+
+    output = await allocation.suggest_rebalance(USER, contribution=5_000)
+
+    [pending] = output["unassigned"]
+    assert pending["asset_class"] == "exterior" and pending["watchlist_candidates"] == ["IVVB11.SA"]

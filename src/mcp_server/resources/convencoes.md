@@ -30,6 +30,6 @@ Como as ferramentas leem os argumentos e escrevem os resultados. Vale para todas
 
 ## Escrita
 
-- `registrar_compra`, `registrar_venda`, `adicionar_watchlist`, `remover_watchlist` e `definir_alocacao` gravam na conta do dono da chave. Exigem uma chave com a permissão de escrita e vêm anotadas como destrutivas: confirme com o usuário antes de chamá-las.
+- `registrar_compra`, `registrar_venda`, `adicionar_watchlist`, `remover_watchlist`, `definir_alocacao` e `definir_classe_ativo` gravam na conta do dono da chave. Exigem uma chave com a permissão de escrita e vêm anotadas como destrutivas: confirme com o usuário antes de chamá-las.
 - Nunca invente o preço de uma operação passada; pergunte. Para uma operação de hoje sem preço informado, a cotação atual serve de sugestão.
 - Os pesos da alocação-alvo são escolha do usuário. Pergunte ou confirme com ele; não os decida a partir do perfil.
