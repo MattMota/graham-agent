@@ -58,6 +58,7 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | REPL de linha de comando | ✅ Existente | `main.py` | |
 | Inspeção do servidor MCP | ✅ Existente | `scripts/mcp_inspector.py` | Abre o MCP Inspector conectado ao `/mcp` com uma chave temporária da conta, revogada ao fechar |
 | Verificação de saúde | ✅ Existente | `GET /api/health` | |
+| Traces na LangSmith | ✅ Existente | Variáveis `LANGSMITH_*` no `.env`, `src/server/runs.py` | Opcional. Cada turno vira um trace, agrupado por conversa na aba *Threads*. Plano gratuito sem cartão: 5.000 traces por mês, recusados depois disso, sem cobrança. Os dados vão para a nuvem da LangSmith; os testes rodam com o tracing desligado |
 
 ## Investidor
 

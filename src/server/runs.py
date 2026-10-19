@@ -264,10 +264,12 @@ async def run(
     thread_id = str(thread["id"])
     # Cada turno roda numa thread própria do LangGraph: os checkpoints servem
     # para inspecionar a execução e para esperar a confirmação; o histórico vem
-    # das nossas tabelas.
+    # das nossas tabelas. O `thread_id` dos metadados é o da conversa: o
+    # LangGraph só copia o do turno para lá quando ele falta, e é por ele que a
+    # LangSmith agrupa os turnos de uma conversa.
     config = {
         "configurable": {"thread_id": recorder.graph_thread_id},
-        "metadata": {"graham_thread_id": thread_id},
+        "metadata": {"graham_thread_id": thread_id, "thread_id": thread_id},
     }
     profile = await memories.profile(pool, thread["user_id"], memory_processing.profile_limit())
     context = AgentContext(

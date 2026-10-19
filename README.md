@@ -105,6 +105,20 @@ PUBLIC_URL=http://127.0.0.1:8000
 
 ### Banco de dados e Redis
 
+#### Traces na LangSmith (opcional)
+
+Para ver cada turno do agente na [LangSmith](https://smith.langchain.com) (chamadas ao modelo, ferramentas do MCP e o nó de aprovação), acrescente ao `.env`:
+
+```dotenv
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=graham
+```
+
+O SDK já vem com o LangChain; nada no código liga ou desliga o tracing além dessas variáveis. Os turnos de uma conversa aparecem agrupados na aba *Threads* do projeto, pelo id da conversa. Os embeddings e o modelo de decisão da memória chamam o provedor direto pelo `httpx` e ficam de fora.
+
+Sem cartão cadastrado, o plano gratuito aceita 5.000 traces por mês e recusa os seguintes, sem cobrar; com cartão, o excedente é cobrado. Cada turno é um trace (retomar depois de uma confirmação abre outro). Os traces vão para os servidores da LangSmith com as perguntas, as respostas e os resultados das ferramentas, inclusive a carteira e o perfil do usuário; com `LANGSMITH_TRACING=false`, nada sai da máquina.
+
 ```bash
 docker compose up -d        # sobe o Postgres 18 com pgvector e o Redis
 docker compose ps           # espere o status "healthy"
@@ -399,7 +413,7 @@ O cache de mercado falha aberto: se o Redis não responder, os dados vêm direto
 
 O `AsyncPostgresSaver` continua ligado, mas como **estado de execução**, não como histórico. Cada turno roda numa thread própria do LangGraph, nomeada pelo id da primeira mensagem do assistente daquele turno, e recebe o histórico já montado a partir das nossas tabelas. Os checkpoints ficam guardados por **um dia**, para inspecionar como o grafo executou, e depois uma tarefa de hora em hora os apaga.
 
-Para ver os checkpoints de um turno, pegue o id da primeira mensagem do assistente e consulte `langgraph.checkpoints` com ele como `thread_id`. Os metadados de cada checkpoint trazem `graham_thread_id`, a conversa a que ele pertence.
+Para ver os checkpoints de um turno, pegue o id da primeira mensagem do assistente e consulte `langgraph.checkpoints` com ele como `thread_id`. Os metadados de cada checkpoint trazem a conversa a que ele pertence, em `graham_thread_id` e em `thread_id`. O segundo é o que a LangSmith usa para agrupar os turnos de uma conversa; sem ele, o LangGraph copiaria para os metadados o `thread_id` do turno, e cada pergunta viraria uma thread à parte.
 
 ### O caminho de uma pergunta
 
