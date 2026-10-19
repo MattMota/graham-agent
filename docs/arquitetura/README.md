@@ -100,7 +100,17 @@ src/
 │   └── static/
 │       ├── index.html
 │       ├── styles.css
-│       └── app.js           Cliente AG-UI, Markdown, histórico, ações e cartões de confirmação
+│       └── js/              O cliente, em módulos ES sem build, um por parte da tela
+│           ├── main.js      Liga o envio e abre a sessão
+│           ├── state.js     Elementos fixos da página, a conversa aberta e a sessão
+│           ├── send.js      Desenha uma execução do agente, evento por evento
+│           ├── agui.js      Ids, extras do Graham e interrupções do AG-UI
+│           ├── history.js   Redesenha uma conversa gravada
+│           ├── approval.js  Os cartões de confirmação
+│           ├── tool-runs.js O detalhe de cada consulta e a rodada de consultas
+│           ├── views.js     As vistas em tabela (TOOL_VIEWS)
+│           ├── chart.js     O gráfico de desempenho
+│           └── ...          Conta, aba de conversas, chaves, Markdown, cartões de ticker
 └── storage/
     ├── accounts.py          Contas e sessões
     ├── allocation.py        Alocação-alvo do usuário

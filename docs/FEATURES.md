@@ -16,7 +16,7 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Perguntas em linguagem natural | ✅ Existente | `src/agent/runtime/state_graph.py` | Ciclo ReAct de dois nós (`agent` e `tools`) no LangGraph |
 | Resposta transmitida token a token | ✅ Existente | `src/server/runs.py` | Eventos AG-UI a partir de `astream_events(version="v2")`, com os argumentos das ferramentas transmitidos enquanto o modelo os escreve |
 | Tempo de pensamento | ✅ Existente | `src/server/runs.py`, `thinking_ms` no `payload` | "pensando · 12 s" enquanto o modelo raciocina sem produzir nada; o total do turno ao lado das ações. Só o tempo é medido, o raciocínio não é mostrado |
-| Aba de conversas | ✅ Existente | `GET /api/threads`, `src/server/static/app.js` | Fixa à esquerda em telas largas, gaveta nas estreitas; indica as que estão respondendo ou aguardando confirmação. Trocar de conversa no meio de uma resposta não a interrompe |
+| Aba de conversas | ✅ Existente | `GET /api/threads`, `static/js/sidebar.js` | Fixa à esquerda em telas largas, gaveta nas estreitas; indica as que estão respondendo ou aguardando confirmação. Trocar de conversa no meio de uma resposta não a interrompe |
 | Renomear, apagar e buscar conversas | ✅ Existente | `PATCH` e `DELETE /api/threads/{id}`, `GET /api/threads?q=` | Busca no título e nas mensagens, sem caixa nem acento, com o trecho destacado. Apagar esconde a conversa e tira os turnos dela da memória do agente; as mensagens ficam para as bifurcações |
 | Nova conversa | ✅ Existente | `POST /api/agent` | O navegador gera o id na primeira pergunta, como o AG-UI espera, e o servidor cria a conversa com ele; o id fica no `localStorage` |
 | Conversas gravadas no banco | ✅ Existente | `src/storage/`, `db/migrations/` | Árvore de mensagens no schema `agent`; reabrir a página redesenha o caminho ativo pelo `MESSAGES_SNAPSHOT` do AG-UI |
@@ -52,9 +52,9 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Feature | Estado | Onde | Observações |
 |---|---|---|---|
 | Cartões de cotação dos tickers citados | ✅ Existente | `src/server/runs.py` | Até 8 por resposta, sem repetir consultas já feitas |
-| Detalhe das consultas feitas | ✅ Existente | `src/server/static/app.js` | Argumentos enviados e JSON devolvido, recolhíveis. Várias consultas seguidas viram um grupo que mostra só a em andamento e a contagem |
-| Análises fora das consultas | ✅ Existente | `toolRun` em `src/server/static/app.js` | Carteira, proventos, o gráfico de desempenho e a agenda de eventos aparecem entre as consultas e o texto da resposta; mais de uma no mesmo grupo, cada uma recolhida sob um título |
-| Markdown nas respostas | ✅ Existente | `src/server/static/app.js` | Renderizador próprio; todo conteúdo é escapado antes de virar HTML |
+| Detalhe das consultas feitas | ✅ Existente | `static/js/tool-runs.js` | Argumentos enviados e JSON devolvido, recolhíveis. Várias consultas seguidas viram um grupo que mostra só a em andamento e a contagem |
+| Análises fora das consultas | ✅ Existente | `toolRun` em `static/js/tool-runs.js`, vistas em `static/js/views.js` | Carteira, proventos, o gráfico de desempenho, a agenda de eventos, o enquadramento e o rebalanceamento aparecem entre as consultas e o texto da resposta; mais de uma no mesmo grupo, cada uma recolhida sob um título |
+| Markdown nas respostas | ✅ Existente | `static/js/markdown.js` | Renderizador próprio; todo conteúdo é escapado antes de virar HTML |
 | REPL de linha de comando | ✅ Existente | `main.py` | |
 | Inspeção do servidor MCP | ✅ Existente | `scripts/mcp_inspector.py` | Abre o MCP Inspector conectado ao `/mcp` com uma chave temporária da conta, revogada ao fechar |
 | Verificação de saúde | ✅ Existente | `GET /api/health` | |

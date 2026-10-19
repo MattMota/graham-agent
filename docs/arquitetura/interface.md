@@ -75,4 +75,6 @@ Os cartões não são gravados: ao reabrir uma conversa, as respostas e as consu
 
 ## Decisões de implementação
 
-**O front-end não tem dependências.** O Markdown das respostas é renderizado por uma função de ~40 linhas em `app.js`, em vez de uma biblioteca de CDN. Tudo é escapado antes de virar HTML, então nada que o modelo ou a Yahoo devolvam pode injetar markup.
+**O front-end não tem dependências.** O Markdown das respostas é renderizado por uma função de ~40 linhas em `js/markdown.js`, em vez de uma biblioteca de CDN. Tudo é escapado antes de virar HTML, então nada que o modelo ou a Yahoo devolvam pode injetar markup.
+
+**Módulos ES, sem build.** O cliente fica em `src/server/static/js/`, um módulo por parte da tela, com imports e exports explícitos; o navegador os carrega a partir do `main.js`. O `state.js` não importa nada e é avaliado primeiro: guarda os elementos fixos da página e o objeto `session` (a conversa aberta, a leitura de stream em curso, se há resposta sendo transmitida). Fica num objeto porque um módulo não pode reatribuir uma variável que importou. Os ciclos entre módulos são só de funções, que já existem quando o módulo é avaliado; o código que roda ao carregar só registra eventos.
