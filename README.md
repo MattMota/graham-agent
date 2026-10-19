@@ -77,6 +77,8 @@ Declaradas em `pyproject.toml` e resolvidas pelo `uv`:
 | `mcp` | SDK oficial do Model Context Protocol: o servidor MCP e o cliente que o Graham usa |
 | `dotenv` | Carrega as credenciais do `.env` |
 
+Para desenvolvimento, no grupo `dev`, que o `uv sync` também instala: `pytest` e `pytest-asyncio` para os [testes](#testes), e `ruff` para o lint.
+
 ---
 
 ## Instalação
@@ -187,6 +189,32 @@ Um REPL simples, útil para testar o agente sem o navegador no caminho. Digite `
 
 Ambos precisam ser executados a partir da **raiz do projeto** — os imports `src.*` são resolvidos em relação ao diretório de trabalho.
 
+### Testes
+
+```bash
+uv run pytest                     # unidade e grafo; a integração é pulada sem as variáveis abaixo
+TEST_DATABASE_URL=postgresql://graham:graham@127.0.0.1:5432/graham_test \
+TEST_REDIS_URL=redis://127.0.0.1:6379/1 \
+uv run pytest                     # tudo, com o Postgres e o Redis do compose
+uv run pytest -m eval             # evals com o modelo de verdade (custam tokens)
+uv run ruff check .
+```
+
+A suíte tem quatro camadas, da mais rápida à mais lenta:
+
+| Pasta | O que cobre | Precisa de |
+|---|---|---|
+| `tests/unit/` | Preço médio e resultado realizado, proventos pela data ex, datas da agenda (UTC e fuso da bolsa), schemas de entrada, escolha dos cartões de ticker | Nada |
+| `tests/graph/` | O grafo com um modelo roteirizado: consulta direta, pausa antes de gravar, valores corrigidos no cartão, cancelamento, resposta com consulta e operações juntas, REPL sem contexto | Nada |
+| `tests/integration/` | O servidor inteiro numa thread: o MCP com chaves de leitura e de escrita e a carteira isolada por dono; um turno pelo AG-UI com ferramenta, texto, cartões, snapshot, confirmação editada, cancelada e abandonada; a memória `conversa` do turno | Postgres e Redis |
+| `tests/evals/` | O modelo configurado escolhe a primeira ferramenta certa em 9 perguntas, cada uma 3 vezes, com 2 acertos exigidos | O `.env` com a chave do modelo |
+
+- **O não determinismo fica isolado.** O grafo, a confirmação e o AG-UI são testados com um modelo roteirizado (`tests/fakes.py`), que fixa as respostas e as transmite em pedaços como um provedor; o que se testa é o que o Graham faz com elas. O modelo de verdade só entra nos evals, que medem uma taxa de acerto em vez de exigir a mesma resposta.
+- **Nada externo é chamado.** Na integração, a cotação, as datas de eventos e os embeddings vêm de tabelas fixas, e o modelo segue o roteiro; a Yahoo e o provedor nunca são chamados. O `tests/conftest.py` anula o `.env` antes de qualquer import: sem Redis de uso, sem traces na LangSmith, sem chave do modelo.
+- **O banco de uso fica intocado.** O banco da integração é recriado a cada sessão e precisa terminar em `_test`; o Redis precisa ser um banco diferente do 0.
+
+A CI (`.github/workflows/ci.yml`) roda o ruff e a suíte, menos os evals, a cada push na `main` e em cada pull request, com o Postgres (pgvector) e o Redis como serviços.
+
 ---
 
 ## Arquitetura
@@ -194,6 +222,7 @@ Ambos precisam ser executados a partir da **raiz do projeto** — os imports `sr
 ```
 main.py                      REPL de linha de comando
 compose.yaml                 Postgres 18 com pgvector, para desenvolvimento
+.github/workflows/ci.yml     Ruff e testes a cada push e pull request
 db/
 ├── migrate.py               Aplica as migrations pendentes
 └── migrations/              Schemas core, agent e langgraph, em SQL
@@ -260,6 +289,13 @@ src/
     ├── memories.py          Memórias: gravação, busca híbrida, substituição e esquecimento
     ├── portfolio.py         Livro de operações, preço médio e watchlist
     └── tokens.py            Tokens de acesso: chaves e tokens internos
+tests/
+├── conftest.py              Anula o .env antes de qualquer import
+├── fakes.py                 O modelo roteirizado
+├── unit/                    Regras de domínio e funções puras
+├── graph/                   O grafo e a confirmação, com o modelo roteirizado
+├── integration/             O servidor inteiro, contra Postgres e Redis de teste
+└── evals/                   O modelo de verdade escolhendo ferramentas
 ```
 
 ### O grafo do agente

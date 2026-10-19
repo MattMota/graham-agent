@@ -19,3 +19,28 @@ dependencies = [
     "uvicorn>=0.53.0",
     "yfinance>=1.7.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Os imports `src.*` partem da raiz, como no servidor e no REPL.
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# Os evals chamam o modelo de verdade e custam tokens: só com `-m eval`.
+addopts = "-m 'not eval'"
+markers = [
+    "integration: precisa do Postgres e do Redis (TEST_DATABASE_URL e TEST_REDIS_URL)",
+    "eval: chama o modelo configurado no .env; não determinístico, roda só com -m eval",
+]
+
+[tool.ruff.lint]
+# O conjunto clássico (erros de sintaxe, nomes indefinidos, imports sem uso),
+# fixo: a 0.17 ampliou o padrão com regras de estilo que o código ainda não segue.
+select = ["E4", "E7", "E9", "F"]

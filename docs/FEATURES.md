@@ -71,6 +71,15 @@ Estado de cada funcionalidade do Graham Agent. Atualize a linha quando uma featu
 | Cache com Redis | ✅ Existente | `src/storage/cache.py` | Notícias por 1h, buscas por 24h, cotações sem cache; as conversas ficam no Postgres, de propósito |
 | Streams retomáveis | ✅ Existente | `src/server/streams.py` | A execução roda em segundo plano; recarregar a página ou perder a conexão não interrompe a resposta. Fora do AG-UI, que não define retomada: `connect` e `Last-Event-ID` |
 
+## Qualidade
+
+| Feature | Estado | Onde | Observações |
+|---|---|---|---|
+| Testes de unidade e do grafo | ✅ Existente | `tests/unit/`, `tests/graph/` | Regras da carteira, proventos, agenda, schemas e cartões; o grafo e a confirmação com um modelo roteirizado, sem provedor |
+| Testes de integração | ✅ Existente | `tests/integration/` | O servidor inteiro contra Postgres e Redis de teste: MCP com chaves e permissões, turnos pelo AG-UI com confirmação, memória do turno. Cotação, eventos, embeddings e modelo fixos |
+| Evals do modelo | ✅ Existente | `tests/evals/`, `-m eval` | Primeira ferramenta escolhida pelo modelo de verdade, por taxa de acerto; fora da CI porque custa tokens |
+| CI | ✅ Existente | `.github/workflows/ci.yml` | Ruff e a suíte, menos os evals, a cada push na `main` e em pull requests |
+
 ## Plataforma
 
 Features interdependentes, na ordem de implementação: cada uma depende das anteriores.
