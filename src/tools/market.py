@@ -2,6 +2,7 @@
 
 import math
 import re
+import time
 
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -31,6 +32,29 @@ from src.tools.schemas.market import (
 NEWS_TTL = 60 * 60
 # Tickers por empresa e empresas por setor quase nunca mudam.
 CATALOG_TTL = 24 * 60 * 60
+
+# Novas tentativas para falhas transitórias das fontes externas, com espera
+# exponencial: a Yahoo pelo próprio yfinance (timeout e conexão caída), o
+# Google News por `_get_with_retry`. Um erro de requisição não se repete.
+NETWORK_RETRIES = 2
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+yf.config.network.retries = NETWORK_RETRIES
+
+
+def _get_with_retry(url: str, **kwargs: Any) -> httpx.Response:
+    """Um GET que tenta de novo quando a fonte falha de um jeito passageiro."""
+    for attempt in range(NETWORK_RETRIES + 1):
+        last = attempt == NETWORK_RETRIES
+        try:
+            response = httpx.get(url, **kwargs)
+        except httpx.TransportError:
+            if last:
+                raise
+        else:
+            if response.status_code not in RETRY_STATUS or last:
+                return response
+        time.sleep(0.5 * 2**attempt)
+    raise AssertionError("inalcançável")
 
 
 def _ticker(ticker_name: str) -> yf.Ticker:
@@ -247,7 +271,7 @@ TOPIC_NOTE = (
 
 def _google_news(query: str, days: int) -> list[ET.Element]:
     """Os itens da busca, do mais relevante ao menos."""
-    response = httpx.get(
+    response = _get_with_retry(
         GOOGLE_NEWS_SEARCH,
         params={"q": f"{query} when:{days}d", "hl": "pt-BR", "gl": "BR", "ceid": "BR:pt-419"},
         timeout=GOOGLE_NEWS_TIMEOUT,

@@ -21,6 +21,7 @@ def _get_client() -> AsyncOpenAI:
             base_url=os.getenv("MODEL_PROVIDER_BASE_URL"),
             api_key=os.getenv("MODEL_PROVIDER_API_KEY"),
             timeout=SETTINGS["embedding"]["timeout"],
+            max_retries=SETTINGS["embedding"]["max_retries"],
         )
     return _client
 

@@ -2,11 +2,15 @@
 model = "deepseek/deepseek-v4-flash"
 temperature = 0.2
 timeout = 60
+# Novas tentativas do cliente da OpenAI, com espera exponencial, para 408, 409,
+# 429, 5xx e falhas de conexão. Erros de requisição (400, 401) não se repetem.
+max_retries = 2
 
 [embedding]
 # Vetores INT8 de 1.024 dimensões, comparados por cosseno (agent.memories.embedding).
 model = "perplexity/pplx-embed-v1-0.6b"
 timeout = 20
+max_retries = 2
 
 [decision]
 # Modelo de decisão (respostas tipadas com probabilidade), pelo /v1/evaluate do gateway.

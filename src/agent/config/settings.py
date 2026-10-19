@@ -25,6 +25,7 @@ def chat_model(**overrides) -> ChatOpenAI:
         "model": SETTINGS["llm"]["model"],
         "temperature": SETTINGS["llm"]["temperature"],
         "timeout": SETTINGS["llm"]["timeout"],
+        "max_retries": SETTINGS["llm"]["max_retries"],
         **overrides,
     }
     return ChatOpenAI(

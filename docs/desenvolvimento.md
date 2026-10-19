@@ -96,10 +96,12 @@ O modelo e seus parâmetros ficam em `src/agent/config/settings.toml`, separados
 model = "deepseek/deepseek-v4-flash"
 temperature = 0.2
 timeout = 60
+max_retries = 2
 
 [embedding]
 model = "perplexity/pplx-embed-v1-0.6b"
 timeout = 20
+max_retries = 2
 
 [decision]
 model = "typesafe-ai/jev"
@@ -114,6 +116,8 @@ supersede_probability = 0.5
 O embedding e o modelo de decisão usam o mesmo gateway e a mesma chave do modelo de chat; o Jev responde pelo endpoint `/evaluate`, não pela API de chat. O `pplx-embed-v1-0.6b` devolve vetores INT8 de 1.024 dimensões, que a coluna `halfvec(1024)` guarda sem perda; trocar de modelo exige uma coluna com a dimensão nova e recalcular os embeddings (a coluna `embedding_model` diz quais estão desatualizados).
 
 O modelo escolhido precisa suportar **tool calling** e **streaming** — sem os dois, o agente não consegue consultar dados nem responder progressivamente.
+
+`max_retries` é o número de novas tentativas do cliente da OpenAI para falhas passageiras (408, 409, 429, 5xx e conexão), com espera exponencial.
 
 As instruções do agente ficam em `src/agent/instructions/system_prompt.md`, em Markdown, carregadas na inicialização.
 
