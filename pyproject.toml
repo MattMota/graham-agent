@@ -1,6 +1,8 @@
 [project]
 name = "graham"
 version = "0.1.0"
+description = "Agente de investimentos pessoal com servidor MCP, aprovação humana no LangGraph e streaming pelo AG-UI"
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "ag-ui-protocol>=1,<2",
